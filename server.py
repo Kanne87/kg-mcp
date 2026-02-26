@@ -386,6 +386,19 @@ async def kg_doc_search(q: str = "", session: int = 0, limit: int = 10) -> str:
     finally:
         db.close()
 
+@mcp.tool(name="kg_doc_delete")
+async def kg_doc_delete(id: str) -> str:
+    """Delete document by ID. Destructive."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT id, title FROM documents WHERE id=?", (id,)).fetchone()
+        if not row: return _c({"error":f"doc_not_found:{id}"})
+        db.execute("DELETE FROM documents WHERE id=?", (id,))
+        db.commit()
+        return _c({"op":"doc_deleted","id":id,"title":row["title"]})
+    finally:
+        db.close()
+
 # --- Resources ---
 
 @mcp.resource("kg://schema")
