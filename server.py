@@ -2,12 +2,16 @@
 kg_mcp - Knowledge Graph MCP Server
 Optimized for LLM context efficiency. All outputs are compact structured data.
 No prose, no markdown, no human formatting. Pure graph.
+
+Schicht 1: Nodes + Edges (assoziativ, komprimiert)
+Schicht 2: Documents (episodisch, Session-Destillate)
 """
 
 import json
 import sqlite3
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -58,11 +62,21 @@ def init_db():
             value TEXT NOT NULL,
             updated_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            session_number INTEGER,
+            node_ids TEXT NOT NULL DEFAULT '[]',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
         CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
         CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
-    """)
+        CREATE INDEX IF NOT EXISTS idx_docs_session ON documents(session_number);
+    """);
     now = time.time()
     for k, v in {
         "focus": "HOLOFEELING-Analyse: Muster aus 8 Baenden als Knowledge Graph externalisieren",
@@ -87,6 +101,15 @@ def _edge(r):
 def _idx(r):
     return {"id":r["id"],"t":r["type"],"st":r["status"]}
 
+def _doc(r):
+    return {"id":r["id"],"title":r["title"],"content":r["content"],
+            "session":r["session_number"],"node_ids":json.loads(r["node_ids"]),
+            "created":r["created_at"],"updated":r["updated_at"]}
+
+def _doc_idx(r):
+    return {"id":r["id"],"title":r["title"],"session":r["session_number"],
+            "len":len(r["content"]),"updated":r["updated_at"]}
+
 # --- Lifespan ---
 
 @asynccontextmanager
@@ -106,18 +129,19 @@ mcp = FastMCP(
 )
 
 # ============================================================
-# TOOLS
+# GRAPH TOOLS
 # ============================================================
 
 @mcp.tool(name="kg_boot")
 async def kg_boot(include_edges: bool = False) -> str:
-    """Session init. Returns {state:{},nodes:[{id,t,st}],edge_count:N}. Call FIRST."""
+    """Session init. Returns {state:{},nodes:[{id,t,st}],edge_count:N,docs:[{id,title,session,len}]}. Call FIRST."""
     db = get_db()
     try:
         state = {r["key"]:r["value"] for r in db.execute("SELECT key,value FROM state").fetchall()}
         nodes = [_idx(r) for r in db.execute("SELECT id,type,status FROM nodes ORDER BY updated_at DESC").fetchall()]
         ec = db.execute("SELECT COUNT(*) as c FROM edges").fetchone()["c"]
-        res = {"state":state,"nodes":nodes,"edge_count":ec}
+        docs = [_doc_idx(r) for r in db.execute("SELECT * FROM documents ORDER BY session_number DESC, updated_at DESC LIMIT 20").fetchall()]
+        res = {"state":state,"nodes":nodes,"edge_count":ec,"docs":docs}
         if include_edges:
             res["edges"] = [_edge(r) for r in db.execute("SELECT * FROM edges").fetchall()]
         sc = int(state.get("session_count","0")) + 1
@@ -297,6 +321,71 @@ async def kg_traverse(start_id: str, max_hops: int = 2, relation_filter: str = "
     finally:
         db.close()
 
+# ============================================================
+# DOCUMENT TOOLS (Schicht 2 - Session-Destillate)
+# ============================================================
+
+@mcp.tool(name="kg_doc_create")
+async def kg_doc_create(title: str, session_number: int = 0, content: str = "", node_ids: str = "[]") -> str:
+    """Create session document. Returns {id,title,session}. node_ids: JSON array of related graph node IDs."""
+    db = get_db()
+    try:
+        doc_id = str(uuid.uuid4())[:8]
+        now = time.time()
+        nids = json.loads(node_ids) if node_ids else []
+        db.execute("INSERT INTO documents (id,title,content,session_number,node_ids,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+            (doc_id, title, content, session_number, json.dumps(nids), now, now))
+        db.commit()
+        return _c({"op":"doc_created","id":doc_id,"title":title,"session":session_number})
+    finally:
+        db.close()
+
+@mcp.tool(name="kg_doc_append")
+async def kg_doc_append(id: str, content: str, node_ids: str = "[]") -> str:
+    """Append to existing document. Adds content + merges node_ids. Primary tool for session destillation."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT * FROM documents WHERE id=?", (id,)).fetchone()
+        if not row: return _c({"error":f"doc_not_found:{id}"})
+        now = time.time()
+        new_content = row["content"] + "\n" + content
+        old_nids = set(json.loads(row["node_ids"]))
+        new_nids = json.loads(node_ids) if node_ids else []
+        merged = list(old_nids | set(new_nids))
+        db.execute("UPDATE documents SET content=?, node_ids=?, updated_at=? WHERE id=?",
+            (new_content, json.dumps(merged), now, id))
+        db.commit()
+        return _c({"op":"doc_appended","id":id,"len":len(new_content),"nodes":len(merged)})
+    finally:
+        db.close()
+
+@mcp.tool(name="kg_doc_read")
+async def kg_doc_read(id: str) -> str:
+    """Read full document by ID. Returns {id,title,content,session,node_ids}."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT * FROM documents WHERE id=?", (id,)).fetchone()
+        if not row: return _c({"error":f"doc_not_found:{id}"})
+        return _c(_doc(row))
+    finally:
+        db.close()
+
+@mcp.tool(name="kg_doc_search")
+async def kg_doc_search(q: str = "", session: int = 0, limit: int = 10) -> str:
+    """Search documents by text or session number. Returns [{id,title,session,len}]."""
+    db = get_db()
+    try:
+        if session > 0:
+            rows = db.execute("SELECT * FROM documents WHERE session_number=? ORDER BY updated_at DESC LIMIT ?", (session, limit)).fetchall()
+        elif q:
+            p = f"%{q}%"
+            rows = db.execute("SELECT * FROM documents WHERE title LIKE ? OR content LIKE ? ORDER BY updated_at DESC LIMIT ?", (p, p, limit)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM documents ORDER BY session_number DESC, updated_at DESC LIMIT ?", (limit,)).fetchall()
+        return _c({"q":q or f"session:{session}","count":len(rows),"docs":[_doc_idx(r) for r in rows]})
+    finally:
+        db.close()
+
 # --- Resources ---
 
 @mcp.resource("kg://schema")
@@ -305,6 +394,7 @@ async def get_schema() -> str:
     return json.dumps({
         "node":{"id":"slug","t":"type","s":"summary","b":"bands[]","st":"status","k":"kai_note","m":"meta{}"},
         "edge":{"src":"source_id","rel":"relation","tgt":"target_id","w":"weight","n":"note"},
+        "doc":{"id":"uuid8","title":"str","content":"str","session":"int","node_ids":"[node_id,...]"},
         "types":"concept|metaphor|principle|model|person|band|insight|pattern|question",
         "statuses":"seed|explored|deep|verified|archived",
         "rels":"contains|contrasts|becomes|mirrors|requires|extends|instantiates|refines|grounds|maps_to|emerges_from|dissolves_into|polarizes"
