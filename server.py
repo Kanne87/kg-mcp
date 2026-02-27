@@ -5,6 +5,10 @@ No prose, no markdown, no human formatting. Pure graph.
 
 Schicht 1: Nodes + Edges (assoziativ, komprimiert)
 Schicht 2: Documents (episodisch, Session-Destillate)
+
+Architecture: Lean boot + domain-based lazy loading.
+Boot returns only state, domain index, and meta-nodes.
+Use kg_load_domain() to pull specific knowledge areas into context.
 """
 
 import json
@@ -40,6 +44,7 @@ def init_db():
             type TEXT NOT NULL DEFAULT 'concept',
             summary TEXT NOT NULL DEFAULT '',
             bands TEXT NOT NULL DEFAULT '[]',
+            domain TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'seed',
             kai_note TEXT NOT NULL DEFAULT '',
             meta TEXT NOT NULL DEFAULT '{}',
@@ -75,8 +80,14 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
         CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
+        CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain);
         CREATE INDEX IF NOT EXISTS idx_docs_session ON documents(session_number);
-    """);
+    """)
+    # Migration: add domain column if missing (existing databases)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
+    if "domain" not in cols:
+        conn.execute("ALTER TABLE nodes ADD COLUMN domain TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain)")
     now = time.time()
     for k, v in {
         "focus": "HOLOFEELING-Analyse: Muster aus 8 Baenden als Knowledge Graph externalisieren",
@@ -93,13 +104,13 @@ def _c(d):
 
 def _node(r):
     return {"id":r["id"],"t":r["type"],"s":r["summary"],"b":json.loads(r["bands"]),
-            "st":r["status"],"k":r["kai_note"],"m":json.loads(r["meta"])}
+            "d":r["domain"],"st":r["status"],"k":r["kai_note"],"m":json.loads(r["meta"])}
 
 def _edge(r):
     return {"src":r["source_id"],"rel":r["relation"],"tgt":r["target_id"],"w":r["weight"],"n":r["note"]}
 
 def _idx(r):
-    return {"id":r["id"],"t":r["type"],"st":r["status"]}
+    return {"id":r["id"],"t":r["type"],"st":r["status"],"d":r["domain"]}
 
 def _doc(r):
     return {"id":r["id"],"title":r["title"],"content":r["content"],
@@ -134,20 +145,108 @@ mcp = FastMCP(
 
 @mcp.tool(name="kg_boot")
 async def kg_boot(include_edges: bool = False) -> str:
-    """Session init. Returns {state:{},nodes:[{id,t,st}],edge_count:N,docs:[{id,title,session,len}]}. Call FIRST."""
+    """Lean session init. Returns {state:{},domains:[{name,count,last_updated}],meta_nodes:[{full nodes}],edge_count:N,docs:[...]}.
+    Only meta-domain nodes are fully loaded. Use kg_load_domain() for other domains. Call FIRST."""
     db = get_db()
     try:
         state = {r["key"]:r["value"] for r in db.execute("SELECT key,value FROM state").fetchall()}
-        nodes = [_idx(r) for r in db.execute("SELECT id,type,status FROM nodes ORDER BY updated_at DESC").fetchall()]
+
+        # Domain index: count + last_updated per domain
+        domain_rows = db.execute("""
+            SELECT domain, COUNT(*) as cnt, MAX(updated_at) as last_upd
+            FROM nodes GROUP BY domain ORDER BY last_upd DESC
+        """).fetchall()
+        domains = [{"name":r["domain"] or "(unassigned)","count":r["cnt"],"last_updated":r["last_upd"]} for r in domain_rows]
+
+        # Meta-nodes: always loaded (core principles, architecture)
+        meta_nodes = [_node(r) for r in db.execute("SELECT * FROM nodes WHERE domain='meta' ORDER BY updated_at DESC").fetchall()]
+
         ec = db.execute("SELECT COUNT(*) as c FROM edges").fetchone()["c"]
         docs = [_doc_idx(r) for r in db.execute("SELECT * FROM documents ORDER BY session_number DESC, updated_at DESC LIMIT 20").fetchall()]
-        res = {"state":state,"nodes":nodes,"edge_count":ec,"docs":docs}
+
+        res = {"state":state,"domains":domains,"meta_nodes":meta_nodes,"edge_count":ec,"docs":docs}
+
         if include_edges:
             res["edges"] = [_edge(r) for r in db.execute("SELECT * FROM edges").fetchall()]
+
         sc = int(state.get("session_count","0")) + 1
         db.execute("INSERT OR REPLACE INTO state (key,value,updated_at) VALUES (?,?,?)", ("session_count",str(sc),time.time()))
         db.commit()
         return _c(res)
+    finally:
+        db.close()
+
+@mcp.tool(name="kg_load_domain")
+async def kg_load_domain(name: str, depth: str = "full") -> str:
+    """Load a domain into context. Returns {domain,nodes:[{full}],edges:[],sub_domains:[]}.
+    Supports dot-notation: 'holofeeling' loads all, 'holofeeling.baende' loads sub-domain only.
+    depth: 'full' (nodes+edges) or 'index' (just node list without summaries)."""
+    db = get_db()
+    try:
+        # Match exact domain or sub-domains (dot-notation)
+        pattern = name + "%"
+        if depth == "index":
+            rows = db.execute("SELECT id, type, status, domain FROM nodes WHERE domain LIKE ? ORDER BY domain, updated_at DESC", (pattern,)).fetchall()
+            nodes = [_idx(r) for r in rows]
+        else:
+            rows = db.execute("SELECT * FROM nodes WHERE domain LIKE ? ORDER BY domain, updated_at DESC", (pattern,)).fetchall()
+            nodes = [_node(r) for r in rows]
+
+        # Edges between loaded nodes
+        node_ids = {r["id"] for r in rows}
+        edges = []
+        if node_ids and depth == "full":
+            placeholders = ",".join("?" * len(node_ids))
+            edge_rows = db.execute(f"""
+                SELECT * FROM edges
+                WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders})
+            """, list(node_ids) + list(node_ids)).fetchall()
+            edges = [_edge(r) for r in edge_rows]
+
+        # Sub-domains within this domain
+        sub_rows = db.execute("""
+            SELECT domain, COUNT(*) as cnt FROM nodes
+            WHERE domain LIKE ? AND domain != ?
+            GROUP BY domain ORDER BY domain
+        """, (pattern, name)).fetchall()
+        subs = [{"name":r["domain"],"count":r["cnt"]} for r in sub_rows]
+
+        return _c({"domain":name,"node_count":len(nodes),"edge_count":len(edges),
+                    "nodes":nodes,"edges":edges,"sub_domains":subs})
+    finally:
+        db.close()
+
+@mcp.tool(name="kg_unload_domain")
+async def kg_unload_domain(name: str) -> str:
+    """Signal that a domain is no longer needed in context. No server-side effect.
+    Returns confirmation for conversation flow."""
+    return _c({"op":"unloaded","domain":name,"note":"Domain removed from active context. Use kg_load_domain() to reload."})
+
+@mcp.tool(name="kg_list_domains")
+async def kg_list_domains() -> str:
+    """Full domain tree with counts and last activity. Returns [{name,count,last_updated,sub_domains:[]}]."""
+    db = get_db()
+    try:
+        rows = db.execute("""
+            SELECT domain, COUNT(*) as cnt, MAX(updated_at) as last_upd
+            FROM nodes GROUP BY domain ORDER BY domain
+        """).fetchall()
+        # Build tree from flat list
+        tree = {}
+        for r in rows:
+            d = r["domain"] or "(unassigned)"
+            parts = d.split(".")
+            root = parts[0]
+            if root not in tree:
+                tree[root] = {"name":root,"count":0,"last_updated":0,"sub_domains":[]}
+            if len(parts) == 1:
+                tree[root]["count"] += r["cnt"]
+                tree[root]["last_updated"] = max(tree[root]["last_updated"], r["last_upd"])
+            else:
+                tree[root]["sub_domains"].append({"name":d,"count":r["cnt"],"last_updated":r["last_upd"]})
+                tree[root]["count"] += r["cnt"]
+                tree[root]["last_updated"] = max(tree[root]["last_updated"], r["last_upd"])
+        return _c({"domains":list(tree.values())})
     finally:
         db.close()
 
@@ -194,8 +293,10 @@ async def kg_search(q: str, limit: int = 10) -> str:
         db.close()
 
 @mcp.tool(name="kg_put_node")
-async def kg_put_node(id: str, type: str = "concept", summary: str = "", bands: str = "[]", status: str = "seed", kai_note: str = "", meta: str = "{}") -> str:
-    """Upsert node. bands: JSON '[1,3]'. meta: JSON '{}'. type: concept|metaphor|principle|model|person|band|insight|pattern|question. status: seed|explored|deep|verified|archived"""
+async def kg_put_node(id: str, type: str = "concept", summary: str = "", bands: str = "[]",
+                      domain: str = "", status: str = "seed", kai_note: str = "", meta: str = "{}") -> str:
+    """Upsert node. domain: dot-notation e.g. 'infra', 'holofeeling.baende', 'meta'. bands: JSON '[1,3]'. meta: JSON '{}'.
+    type: concept|metaphor|principle|model|person|band|insight|pattern|question. status: seed|explored|deep|verified|archived"""
     db = get_db()
     try:
         now = time.time()
@@ -207,6 +308,7 @@ async def kg_put_node(id: str, type: str = "concept", summary: str = "", bands: 
             if type: u["type"]=type
             if summary: u["summary"]=summary
             if bands and bands != "[]": u["bands"]=json.dumps(bl)
+            if domain is not None and domain != "": u["domain"]=domain
             if status: u["status"]=status
             if kai_note: u["kai_note"]=kai_note
             if meta and meta != "{}":
@@ -214,11 +316,11 @@ async def kg_put_node(id: str, type: str = "concept", summary: str = "", bands: 
                 u["meta"]=json.dumps(old, ensure_ascii=False)
             sc = ",".join(f"{k}=?" for k in u)
             db.execute(f"UPDATE nodes SET {sc} WHERE id=?", list(u.values())+[id])
-            db.commit(); return _c({"op":"updated","id":id})
+            db.commit(); return _c({"op":"updated","id":id,"domain":u.get("domain",ex["domain"])})
         else:
-            db.execute("INSERT INTO nodes (id,type,summary,bands,status,kai_note,meta,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (id,type,summary,json.dumps(bl),status,kai_note,json.dumps(md,ensure_ascii=False),now,now))
-            db.commit(); return _c({"op":"created","id":id})
+            db.execute("INSERT INTO nodes (id,type,summary,bands,domain,status,kai_note,meta,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (id,type,summary,json.dumps(bl),domain,status,kai_note,json.dumps(md,ensure_ascii=False),now,now))
+            db.commit(); return _c({"op":"created","id":id,"domain":domain})
     finally:
         db.close()
 
@@ -265,26 +367,42 @@ async def kg_state(key: str, value: str) -> str:
 
 @mcp.tool(name="kg_bulk")
 async def kg_bulk(operations: str) -> str:
-    """Batch ops. Input JSON: {nodes:[{id,type,summary,bands,status,kai_note,meta}],edges:[{source_id,target_id,relation,weight,note}]}"""
+    """Batch ops. Input JSON: {nodes:[{id,type,summary,bands,domain,status,kai_note,meta}],edges:[{source_id,target_id,relation,weight,note}]}"""
     db = get_db()
     try:
         ops = json.loads(operations); now = time.time(); nc=ec=0
         for n in ops.get("nodes",[]):
             ex = db.execute("SELECT id FROM nodes WHERE id=?", (n["id"],)).fetchone()
             if ex:
-                db.execute("UPDATE nodes SET type=?,summary=?,bands=?,status=?,kai_note=?,meta=?,updated_at=? WHERE id=?",
+                db.execute("UPDATE nodes SET type=?,summary=?,bands=?,domain=?,status=?,kai_note=?,meta=?,updated_at=? WHERE id=?",
                     (n.get("type","concept"),n.get("summary",""),json.dumps(n.get("bands",[])),
-                     n.get("status","seed"),n.get("kai_note",""),json.dumps(n.get("meta",{}),ensure_ascii=False),now,n["id"]))
+                     n.get("domain",""),n.get("status","seed"),n.get("kai_note",""),
+                     json.dumps(n.get("meta",{}),ensure_ascii=False),now,n["id"]))
             else:
-                db.execute("INSERT INTO nodes (id,type,summary,bands,status,kai_note,meta,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT INTO nodes (id,type,summary,bands,domain,status,kai_note,meta,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (n["id"],n.get("type","concept"),n.get("summary",""),json.dumps(n.get("bands",[])),
-                     n.get("status","seed"),n.get("kai_note",""),json.dumps(n.get("meta",{}),ensure_ascii=False),now,now))
+                     n.get("domain",""),n.get("status","seed"),n.get("kai_note",""),
+                     json.dumps(n.get("meta",{}),ensure_ascii=False),now,now))
             nc+=1
         for e in ops.get("edges",[]):
             db.execute("INSERT OR REPLACE INTO edges (source_id,target_id,relation,weight,note,created_at) VALUES (?,?,?,?,?,?)",
                 (e["source_id"],e["target_id"],e["relation"],e.get("weight",1.0),e.get("note",""),now))
             ec+=1
         db.commit(); return _c({"op":"bulk","nodes":nc,"edges":ec})
+    finally:
+        db.close()
+
+@mcp.tool(name="kg_bulk_set_domain")
+async def kg_bulk_set_domain(domain: str, node_ids: str) -> str:
+    """Set domain for multiple nodes at once. node_ids: JSON array of node IDs. For migration."""
+    db = get_db()
+    try:
+        ids = json.loads(node_ids)
+        now = time.time()
+        for nid in ids:
+            db.execute("UPDATE nodes SET domain=?, updated_at=? WHERE id=?", (domain, now, nid))
+        db.commit()
+        return _c({"op":"bulk_domain_set","domain":domain,"count":len(ids)})
     finally:
         db.close()
 
@@ -405,11 +523,12 @@ async def kg_doc_delete(id: str) -> str:
 async def get_schema() -> str:
     """Format reference."""
     return json.dumps({
-        "node":{"id":"slug","t":"type","s":"summary","b":"bands[]","st":"status","k":"kai_note","m":"meta{}"},
+        "node":{"id":"slug","t":"type","s":"summary","b":"bands[]","d":"domain","st":"status","k":"kai_note","m":"meta{}"},
         "edge":{"src":"source_id","rel":"relation","tgt":"target_id","w":"weight","n":"note"},
         "doc":{"id":"uuid8","title":"str","content":"str","session":"int","node_ids":"[node_id,...]"},
         "types":"concept|metaphor|principle|model|person|band|insight|pattern|question",
         "statuses":"seed|explored|deep|verified|archived",
+        "domains":"meta|infra|holofeeling|holofeeling.baende|lo-board|kanzlei|recht-privat|ki-theorie|voice|... (dot-notation for hierarchy)",
         "rels":"contains|contrasts|becomes|mirrors|requires|extends|instantiates|refines|grounds|maps_to|emerges_from|dissolves_into|polarizes"
     }, indent=2)
 
