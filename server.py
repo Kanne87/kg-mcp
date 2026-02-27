@@ -80,14 +80,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
         CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
-        CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain);
         CREATE INDEX IF NOT EXISTS idx_docs_session ON documents(session_number);
     """)
     # Migration: add domain column if missing (existing databases)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
     if "domain" not in cols:
         conn.execute("ALTER TABLE nodes ADD COLUMN domain TEXT NOT NULL DEFAULT ''")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain)")
+        conn.commit()
+    # Domain index: always ensure it exists (after migration)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain)")
+    conn.commit()
     now = time.time()
     for k, v in {
         "focus": "HOLOFEELING-Analyse: Muster aus 8 Baenden als Knowledge Graph externalisieren",
