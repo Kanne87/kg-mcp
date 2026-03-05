@@ -154,9 +154,12 @@ def build_wbs_tree(root_id="wbs_root", max_depth=4):
         visited = set()
 
         def _label(row):
-            meta = json.loads(row["meta"]) if row["meta"] else {}
-            if meta.get("wbs_label"):
-                return meta["wbs_label"]
+            try:
+                meta = json.loads(row["meta"]) if row["meta"] else {}
+                if isinstance(meta, dict) and meta.get("wbs_label"):
+                    return meta["wbs_label"]
+            except (json.JSONDecodeError, TypeError):
+                pass
             s = row["summary"] or ""
             if s.startswith("WBS-Umbrella: "):
                 s = s[14:]
