@@ -21,6 +21,8 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
+from starlette.routing import Route
+from starlette.responses import JSONResponse, Response
 
 # --- Constants ---
 
@@ -140,6 +142,80 @@ mcp = FastMCP(
     stateless_http=True,
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
+
+# ============================================================
+# REST ENDPOINTS (non-MCP, for static frontends)
+# ============================================================
+
+def build_wbs_tree(root_id="wbs_root", max_depth=4):
+    """Build nested JSON tree by following 'contains' edges from root."""
+    db = get_db()
+    try:
+        visited = set()
+
+        def _label(row):
+            s = row["summary"] or ""
+            if s.startswith("WBS-Umbrella: "):
+                s = s[14:]
+                if "(" in s: s = s[:s.index("(")].strip()
+                return s
+            for sep in [" – ", " - ", ". "]:
+                if sep in s: return s[:s.index(sep)].strip()
+            if len(s) > 60:
+                for i in range(60, 30, -1):
+                    if s[i] in " .,:;": return s[:i].strip()
+            return s or row["id"].replace("_", " ").title()
+
+        def _build(node_id, depth):
+            if node_id in visited or depth > max_depth:
+                return None
+            visited.add(node_id)
+            row = db.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+            if not row: return None
+            children = []
+            if depth < max_depth:
+                edges = db.execute(
+                    "SELECT target_id, weight FROM edges WHERE source_id=? AND relation='contains' ORDER BY weight DESC",
+                    (node_id,)).fetchall()
+                for e in edges:
+                    child = _build(e["target_id"], depth + 1)
+                    if child: children.append(child)
+            return {"id": row["id"], "name": _label(row), "description": row["summary"],
+                    "status": row["status"], "type": row["type"], "domain": row["domain"],
+                    "children": children}
+
+        tree = _build(root_id, 0)
+        if not tree: return {"error": f"Root node '{root_id}' not found"}
+
+        def _count(node):
+            c = {node["status"]: 1}
+            for ch in node.get("children", []):
+                for k, v in _count(ch).items(): c[k] = c.get(k, 0) + v
+            return c
+        def _total(node): return 1 + sum(_total(c) for c in node.get("children", []))
+
+        tree["stats"] = {"total_nodes": _total(tree), "by_status": _count(tree)}
+        tree["generated_at"] = time.time()
+        return tree
+    finally:
+        db.close()
+
+_CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS",
+         "Access-Control-Allow-Headers": "*", "Cache-Control": "public, max-age=60"}
+
+async def _handle_wbs(request):
+    root_id = request.query_params.get("root", "wbs_root")
+    depth = min(int(request.query_params.get("depth", "4")), 6)
+    tree = build_wbs_tree(root_id, depth)
+    return JSONResponse(tree, headers=_CORS)
+
+async def _handle_wbs_options(request):
+    return Response(status_code=204, headers=_CORS)
+
+mcp._custom_starlette_routes.extend([
+    Route("/wbs", _handle_wbs, methods=["GET"]),
+    Route("/wbs", _handle_wbs_options, methods=["OPTIONS"]),
+])
 
 # ============================================================
 # GRAPH TOOLS
