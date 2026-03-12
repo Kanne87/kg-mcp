@@ -2,10 +2,11 @@
 sleep.py - Naechtliche KG-Konsolidierung
 Direkt im KG-MCP-Service. Kein N8N noetig.
 
-3 Phasen:
+4 Phasen:
   Phase 1: Inventur (Sonnet) - Was ist heute passiert?
   Phase 2: Reflexion + Traum (Opus) - Muster, Synthese, Traum-Bild
   Phase 3: Umsetzung - Traum-Dokument speichern + E-Mail senden
+  Phase 3b: Tagebuch - Menschenlesbares Projekt-Update fuer Kais Dashboard
 
 Scheduler: Threading-basiert (daemon), 1:00 CET/CEST.
 REST: /sleep/status, /sleep/trigger
@@ -67,7 +68,7 @@ def start_scheduler():
     global _scheduler_thread, _scheduler_active
     with _scheduler_lock:
         if _scheduler_thread and _scheduler_thread.is_alive():
-            return False  # Already running
+            return False
         _scheduler_active = True
         _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True, name="kg_sleep")
         _scheduler_thread.start()
@@ -322,10 +323,8 @@ def phase_3_email(persist_result, traum):
     msg["From"] = from_addr
     msg["To"] = to_addr
 
-    # Plain text
     msg.attach(MIMEText(persist_result["content"], "plain", "utf-8"))
 
-    # HTML (Cream/Gold Design)
     ref_html = traum.get("reflexion", "").replace("\n", "<br>")
     traum_html = traum.get("traum", "").replace("\n", "<br>")
     fokus = traum.get("vorschlag_fokus_morgen", "")
@@ -360,6 +359,70 @@ def phase_3_email(persist_result, traum):
     except Exception as e:
         logger.error(f"E-Mail fehlgeschlagen: {e}")
         return False
+
+
+def phase_3b_diary(analyse, inventory, traum):
+    """Menschenlesbares Projekt-Tagebuch fuer Kais Dashboard."""
+    session_titles = [d["title"] for d in inventory.get("session_docs", [])]
+    node_changes = [
+        f"- {n['id']} ({n['domain']}/{n['status']}): {n['summary'][:80]}"
+        for n in inventory.get("recent_nodes", [])[:20]
+    ]
+
+    prompt = (
+        "Du schreibst ein kurzes Projekt-Tagebuch fuer Kai Lohmann. "
+        "Kai ist Versicherungsmakler und baut ein digitales Oekosystem "
+        "(lo-board, Knowledge Graph, Rechner-Tools, Vertrieb). "
+        "Schreibe in der Du-Form, direkt an Kai gerichtet.\n\n"
+        "Tagesanalyse:\n"
+        f"{json.dumps(analyse, ensure_ascii=False, indent=2)}\n\n"
+        "Heutige Sessions:\n"
+        + "\n".join(f"- {t}" for t in session_titles) + "\n\n"
+        "Geaenderte Nodes:\n"
+        + "\n".join(node_changes) + "\n\n"
+        f"Traum-Titel der Nacht: {traum.get('traum_titel', '')}\n"
+        f"Fokus-Vorschlag: {traum.get('vorschlag_fokus_morgen', '')}\n\n"
+        "Schreibe ein kompaktes Projekt-Tagebuch (max 300 Woerter). "
+        "Struktur mit Markdown-Headern:\n"
+        "## Fortschritte heute\n"
+        "Was wurde konkret erreicht oder umgesetzt?\n\n"
+        "## Offene Punkte\n"
+        "Was wartet noch auf Arbeit?\n\n"
+        "## Naechste Schritte\n"
+        "Was sollte als naechstes passieren?\n\n"
+        "Halte es kurz, konkret, nuetzlich. Keine Poesie, kein Fuelltext. "
+        "Verwende Markdown-Listen wo sinnvoll."
+    )
+
+    try:
+        content = _llm("claude-sonnet-4-20250514", prompt, 1500)
+    except Exception as e:
+        logger.error(f"Tagebuch-LLM-Fehler: {e}")
+        content = (
+            "## Fortschritte heute\n"
+            + analyse.get("zusammenfassung", "Keine Zusammenfassung verfuegbar.")
+            + "\n\n## Offene Punkte\n"
+            + "\n".join(f"- {f}" for f in analyse.get("offene_faeden", []))
+        )
+
+    db = _db()
+    try:
+        now = time.time()
+        datum = datetime.now(TZ_BERLIN).strftime("%d.%m.%Y")
+        doc_id = str(uuid.uuid4())[:8]
+        doc_title = f"Tagebuch - {datum}"
+
+        db.execute(
+            "INSERT INTO documents "
+            "(id,title,content,session_number,node_ids,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (doc_id, doc_title, content, 0, "[]", now, now),
+        )
+        db.commit()
+        logger.info(f"Tagebuch gespeichert: {doc_title}")
+        return {"doc_id": doc_id, "doc_title": doc_title}
+    finally:
+        db.close()
 
 
 # ==============================================================
@@ -419,6 +482,11 @@ def run_sleep_cycle():
         persist = phase_3_persist(traum, analyse, inventory)
         email_ok = phase_3_email(persist, traum)
 
+        # Phase 3b: Projekt-Tagebuch
+        logger.info("Phase 3b: Projekt-Tagebuch...")
+        diary = phase_3b_diary(analyse, inventory, traum)
+        logger.info(f"Tagebuch: {diary.get('doc_title', '?')}")
+
         elapsed = time.time() - start
         result = {
             "status": "completed",
@@ -426,6 +494,7 @@ def run_sleep_cycle():
             "elapsed_s": round(elapsed, 1),
             "doc_id": persist["doc_id"],
             "traum_titel": traum.get("traum_titel", ""),
+            "diary_id": diary.get("doc_id", ""),
             "email_sent": email_ok,
         }
         _last_run = result
@@ -473,7 +542,6 @@ def _scheduler_loop():
                 f"um {target.strftime('%H:%M %d.%m.%Y')}"
             )
 
-            # Sleep in 60s intervals for clean shutdown
             slept = 0
             while slept < wait and _scheduler_active:
                 chunk = min(60, wait - slept)
