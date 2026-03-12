@@ -92,12 +92,10 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
         CREATE INDEX IF NOT EXISTS idx_docs_session ON documents(session_number);
     """)
-    # Migration: add domain column if missing (existing databases)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()]
     if "domain" not in cols:
         conn.execute("ALTER TABLE nodes ADD COLUMN domain TEXT NOT NULL DEFAULT ''")
         conn.commit()
-    # Domain index: always ensure it exists (after migration)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_domain ON nodes(domain)")
     conn.commit()
     now = time.time()
@@ -138,7 +136,6 @@ def _doc_idx(r):
 @asynccontextmanager
 async def app_lifespan(app):
     init_db()
-    # Start sleep scheduler
     _sleep_task = None
     try:
         from sleep import sleep_scheduler, SLEEP_ENABLED
@@ -188,7 +185,7 @@ def build_wbs_tree(root_id="wbs_root", max_depth=4):
                 s = s[14:]
                 if "(" in s: s = s[:s.index("(")].strip()
                 return s
-            for sep in [" – ", " - ", ". "]:
+            for sep in [" \u2013 ", " - ", ". "]:
                 if sep in s: return s[:s.index(sep)].strip()
             if len(s) > 60:
                 for i in range(60, 30, -1):
@@ -271,6 +268,32 @@ async def _handle_sleep_trigger(request):
 async def _handle_sleep_options(request):
     return Response(status_code=204, headers=_CORS)
 
+
+# --- Diary + Dashboard REST endpoints ---
+
+async def _handle_diary(request):
+    """Return recent diary/traum documents for the dashboard."""
+    db = get_db()
+    try:
+        limit = min(int(request.query_params.get("limit", "10")), 50)
+        rows = db.execute(
+            "SELECT * FROM documents WHERE title LIKE 'Tagebuch%' OR title LIKE 'Traum%' "
+            "ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        docs = [_doc(r) for r in rows]
+        return JSONResponse({"count": len(docs), "docs": docs}, headers=_CORS)
+    finally:
+        db.close()
+
+async def _handle_dashboard(request):
+    """Serve the dashboard HTML."""
+    html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
+
 mcp._custom_starlette_routes.extend([
     Route("/wbs", _handle_wbs, methods=["GET"]),
     Route("/wbs", _handle_wbs_options, methods=["OPTIONS"]),
@@ -279,6 +302,9 @@ mcp._custom_starlette_routes.extend([
     Route("/sleep/status", _handle_sleep_options, methods=["OPTIONS"]),
     Route("/sleep/trigger", _handle_sleep_trigger, methods=["POST"]),
     Route("/sleep/trigger", _handle_sleep_options, methods=["OPTIONS"]),
+    Route("/diary", _handle_diary, methods=["GET"]),
+    Route("/diary", _handle_wbs_options, methods=["OPTIONS"]),
+    Route("/dashboard", _handle_dashboard, methods=["GET"]),
 ])
 
 # ============================================================
@@ -292,25 +318,17 @@ async def kg_boot(include_edges: bool = False) -> str:
     db = get_db()
     try:
         state = {r["key"]:r["value"] for r in db.execute("SELECT key,value FROM state").fetchall()}
-
-        # Domain index: count + last_updated per domain
         domain_rows = db.execute("""
             SELECT domain, COUNT(*) as cnt, MAX(updated_at) as last_upd
             FROM nodes GROUP BY domain ORDER BY last_upd DESC
         """).fetchall()
         domains = [{"name":r["domain"] or "(unassigned)","count":r["cnt"],"last_updated":r["last_upd"]} for r in domain_rows]
-
-        # Meta-nodes: always loaded (core principles, architecture)
         meta_nodes = [_node(r) for r in db.execute("SELECT * FROM nodes WHERE domain='meta' ORDER BY updated_at DESC").fetchall()]
-
         ec = db.execute("SELECT COUNT(*) as c FROM edges").fetchone()["c"]
         docs = [_doc_idx(r) for r in db.execute("SELECT * FROM documents ORDER BY session_number DESC, updated_at DESC LIMIT 20").fetchall()]
-
         res = {"state":state,"domains":domains,"meta_nodes":meta_nodes,"edge_count":ec,"docs":docs}
-
         if include_edges:
             res["edges"] = [_edge(r) for r in db.execute("SELECT * FROM edges").fetchall()]
-
         sc = int(state.get("session_count","0")) + 1
         db.execute("INSERT OR REPLACE INTO state (key,value,updated_at) VALUES (?,?,?)", ("session_count",str(sc),time.time()))
         db.commit()
@@ -325,7 +343,6 @@ async def kg_load_domain(name: str, depth: str = "full") -> str:
     depth: 'full' (nodes+edges) or 'index' (just node list without summaries)."""
     db = get_db()
     try:
-        # Match exact domain or sub-domains (dot-notation)
         pattern = name + "%"
         if depth == "index":
             rows = db.execute("SELECT id, type, status, domain FROM nodes WHERE domain LIKE ? ORDER BY domain, updated_at DESC", (pattern,)).fetchall()
@@ -333,8 +350,6 @@ async def kg_load_domain(name: str, depth: str = "full") -> str:
         else:
             rows = db.execute("SELECT * FROM nodes WHERE domain LIKE ? ORDER BY domain, updated_at DESC", (pattern,)).fetchall()
             nodes = [_node(r) for r in rows]
-
-        # Edges between loaded nodes
         node_ids = {r["id"] for r in rows}
         edges = []
         if node_ids and depth == "full":
@@ -344,15 +359,12 @@ async def kg_load_domain(name: str, depth: str = "full") -> str:
                 WHERE source_id IN ({placeholders}) AND target_id IN ({placeholders})
             """, list(node_ids) + list(node_ids)).fetchall()
             edges = [_edge(r) for r in edge_rows]
-
-        # Sub-domains within this domain
         sub_rows = db.execute("""
             SELECT domain, COUNT(*) as cnt FROM nodes
             WHERE domain LIKE ? AND domain != ?
             GROUP BY domain ORDER BY domain
         """, (pattern, name)).fetchall()
         subs = [{"name":r["domain"],"count":r["cnt"]} for r in sub_rows]
-
         return _c({"domain":name,"node_count":len(nodes),"edge_count":len(edges),
                     "nodes":nodes,"edges":edges,"sub_domains":subs})
     finally:
@@ -373,7 +385,6 @@ async def kg_list_domains() -> str:
             SELECT domain, COUNT(*) as cnt, MAX(updated_at) as last_upd
             FROM nodes GROUP BY domain ORDER BY domain
         """).fetchall()
-        # Build tree from flat list
         tree = {}
         for r in rows:
             d = r["domain"] or "(unassigned)"
@@ -676,7 +687,6 @@ async def get_schema() -> str:
 
 # --- Entry ---
 
-# Eager import to trigger scheduler auto-start
 try:
     import sleep as _sleep_module
 except Exception as _e:
