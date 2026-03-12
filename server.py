@@ -18,6 +18,14 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
+import asyncio
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import TransportSecuritySettings
@@ -130,7 +138,22 @@ def _doc_idx(r):
 @asynccontextmanager
 async def app_lifespan(app):
     init_db()
+    # Start sleep scheduler
+    _sleep_task = None
+    try:
+        from sleep import sleep_scheduler, SLEEP_ENABLED
+        if SLEEP_ENABLED:
+            _sleep_task = asyncio.create_task(sleep_scheduler())
+            logging.getLogger("kg_mcp").info("Sleep scheduler gestartet")
+    except Exception as e:
+        logging.getLogger("kg_mcp").warning(f"Sleep scheduler Fehler: {e}")
     yield {}
+    if _sleep_task:
+        _sleep_task.cancel()
+        try:
+            await _sleep_task
+        except asyncio.CancelledError:
+            pass
 
 # --- Server ---
 
@@ -226,10 +249,36 @@ async def _handle_wbs_app(request):
     except FileNotFoundError:
         return HTMLResponse("<h1>wbs.html not found</h1>", status_code=404)
 
+
+# --- Sleep REST endpoints ---
+
+async def _handle_sleep_status(request):
+    try:
+        from sleep import get_status
+        return JSONResponse(get_status(), headers=_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
+
+async def _handle_sleep_trigger(request):
+    try:
+        from sleep import run_sleep_cycle
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, run_sleep_cycle)
+        return JSONResponse(result, headers=_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
+
+async def _handle_sleep_options(request):
+    return Response(status_code=204, headers=_CORS)
+
 mcp._custom_starlette_routes.extend([
     Route("/wbs", _handle_wbs, methods=["GET"]),
     Route("/wbs", _handle_wbs_options, methods=["OPTIONS"]),
     Route("/wbs-app", _handle_wbs_app, methods=["GET"]),
+    Route("/sleep/status", _handle_sleep_status, methods=["GET"]),
+    Route("/sleep/status", _handle_sleep_options, methods=["OPTIONS"]),
+    Route("/sleep/trigger", _handle_sleep_trigger, methods=["POST"]),
+    Route("/sleep/trigger", _handle_sleep_options, methods=["OPTIONS"]),
 ])
 
 # ============================================================
