@@ -7,16 +7,16 @@ Direkt im KG-MCP-Service. Kein N8N noetig.
   Phase 2: Reflexion + Traum (Opus) - Muster, Synthese, Traum-Bild
   Phase 3: Umsetzung - Traum-Dokument speichern + E-Mail senden
 
-Scheduler: asyncio-basiert, 1:00 CET/CEST.
+Scheduler: Threading-basiert (daemon), 1:00 CET/CEST.
 REST: /sleep/status, /sleep/trigger
 """
 
-import asyncio
 import json
 import logging
 import os
 import smtplib
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -41,6 +41,8 @@ SLEEP_ENABLED = os.environ.get("SLEEP_ENABLED", "true").lower() == "true"
 _last_run = None
 _next_run = None
 _scheduler_active = False
+_scheduler_thread = None
+_scheduler_lock = threading.Lock()
 
 
 def get_status():
@@ -60,6 +62,18 @@ def get_status():
     }
 
 
+def start_scheduler():
+    """Idempotent: startet Scheduler nur wenn noch nicht aktiv."""
+    global _scheduler_thread, _scheduler_active
+    with _scheduler_lock:
+        if _scheduler_thread and _scheduler_thread.is_alive():
+            return False  # Already running
+        _scheduler_active = True
+        _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True, name="kg_sleep")
+        _scheduler_thread.start()
+        return True
+
+
 # --- DB (same pattern as server.py, no circular import) ---
 def _db():
     conn = sqlite3.connect(DB_PATH)
@@ -70,7 +84,7 @@ def _db():
 
 # --- Anthropic ---
 def _llm(model, prompt, max_tokens=2000):
-    """Synchroner Anthropic-Call. Laeuft im Thread-Pool."""
+    """Synchroner Anthropic-Call."""
     import anthropic
 
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -353,7 +367,7 @@ def phase_3_email(persist_result, traum):
 # ==============================================================
 
 def run_sleep_cycle():
-    """Kompletter Schlaf-Zyklus. Synchron (laeuft im Thread-Pool)."""
+    """Kompletter Schlaf-Zyklus. Synchron."""
     global _last_run
     logger.info("=== SCHLAF-ZYKLUS START ===")
     start = time.time()
@@ -432,20 +446,19 @@ def run_sleep_cycle():
 
 
 # ==============================================================
-# SCHEDULER
+# SCHEDULER (Threading, daemon, idempotent)
 # ==============================================================
 
-async def sleep_scheduler():
-    """Asyncio-Cron: wartet bis SLEEP_HOUR:SLEEP_MINUTE CET, dann ausfuehren."""
+def _scheduler_loop():
+    """Endlos-Schleife: wartet bis SLEEP_HOUR:SLEEP_MINUTE CET, dann ausfuehren."""
     global _next_run, _scheduler_active
-    _scheduler_active = True
     logger.info(
         f"Schlaf-Scheduler aktiv: "
         f"{SLEEP_HOUR:02d}:{SLEEP_MINUTE:02d} Europe/Berlin"
     )
 
     try:
-        while True:
+        while _scheduler_active:
             now = datetime.now(TZ_BERLIN)
             target = now.replace(
                 hour=SLEEP_HOUR, minute=SLEEP_MINUTE, second=0, microsecond=0
@@ -460,15 +473,18 @@ async def sleep_scheduler():
                 f"um {target.strftime('%H:%M %d.%m.%Y')}"
             )
 
-            await asyncio.sleep(wait)
+            # Sleep in 60s intervals for clean shutdown
+            slept = 0
+            while slept < wait and _scheduler_active:
+                chunk = min(60, wait - slept)
+                time.sleep(chunk)
+                slept += chunk
 
-            # Synchrone Phasen im Thread-Pool ausfuehren
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, run_sleep_cycle)
+            if _scheduler_active:
+                run_sleep_cycle()
 
-    except asyncio.CancelledError:
+    except Exception as e:
+        logger.error(f"Schlaf-Scheduler Fehler: {e}", exc_info=True)
+    finally:
         _scheduler_active = False
         logger.info("Schlaf-Scheduler gestoppt")
-    except Exception as e:
-        _scheduler_active = False
-        logger.error(f"Schlaf-Scheduler Fehler: {e}", exc_info=True)

@@ -138,22 +138,16 @@ def _doc_idx(r):
 @asynccontextmanager
 async def app_lifespan(app):
     init_db()
-    # Start sleep scheduler
-    _sleep_task = None
+    # Start sleep scheduler (idempotent - only starts once)
     try:
-        from sleep import sleep_scheduler, SLEEP_ENABLED
+        from sleep import start_scheduler, SLEEP_ENABLED
         if SLEEP_ENABLED:
-            _sleep_task = asyncio.create_task(sleep_scheduler())
-            logging.getLogger("kg_mcp").info("Sleep scheduler gestartet")
+            started = start_scheduler()
+            if started:
+                logging.getLogger("kg_mcp").info("Sleep scheduler gestartet")
     except Exception as e:
         logging.getLogger("kg_mcp").warning(f"Sleep scheduler Fehler: {e}")
     yield {}
-    if _sleep_task:
-        _sleep_task.cancel()
-        try:
-            await _sleep_task
-        except asyncio.CancelledError:
-            pass
 
 # --- Server ---
 
@@ -261,9 +255,17 @@ async def _handle_sleep_status(request):
 
 async def _handle_sleep_trigger(request):
     try:
+        import threading
         from sleep import run_sleep_cycle
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, run_sleep_cycle)
+        result = {}
+        def _run():
+            nonlocal result
+            result.update(run_sleep_cycle())
+        t = threading.Thread(target=_run)
+        t.start()
+        t.join(timeout=120)
+        if t.is_alive():
+            return JSONResponse({"status": "running", "note": "Timeout nach 120s, laeuft im Hintergrund weiter"}, headers=_CORS)
         return JSONResponse(result, headers=_CORS)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
