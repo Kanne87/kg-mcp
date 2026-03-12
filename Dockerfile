@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 COPY sleep.py .
 COPY wbs.html .
+COPY dashboard.html .
 
 # Data volume for SQLite persistence
 VOLUME /data
