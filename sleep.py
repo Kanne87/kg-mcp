@@ -488,3 +488,13 @@ def _scheduler_loop():
     finally:
         _scheduler_active = False
         logger.info("Schlaf-Scheduler gestoppt")
+
+
+# ==============================================================
+# AUTO-START: Scheduler startet beim ersten Import
+# ==============================================================
+
+if SLEEP_ENABLED:
+    started = start_scheduler()
+    if started:
+        logger.info("Scheduler auto-gestartet via Modul-Import")
