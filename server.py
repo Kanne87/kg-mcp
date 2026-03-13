@@ -226,6 +226,115 @@ def build_wbs_tree(root_id="wbs_root", max_depth=4):
     finally:
         db.close()
 
+
+
+def build_orchestration_data(root_id="wbs_root", max_depth=5):
+    """Build flat graph data with all nodes, edges, and derived next actions for the orchestration dashboard."""
+    db = get_db()
+    try:
+        visited = set()
+        all_nodes = []
+
+        def _label_node(row):
+            meta = {}
+            try:
+                meta = json.loads(row["meta"]) if row["meta"] else {}
+            except (json.JSONDecodeError, TypeError):
+                pass
+            name = ""
+            if isinstance(meta, dict) and meta.get("wbs_label"):
+                name = meta["wbs_label"]
+            else:
+                s = row["summary"] or ""
+                for sep in [" \u2013 ", " - ", ". "]:
+                    if sep in s:
+                        name = s[:s.index(sep)].strip()
+                        break
+                if not name:
+                    name = s[:60] if len(s) > 60 else s
+                if not name:
+                    name = row["id"].replace("_", " ").title()
+            return name, meta
+
+        def _collect(node_id, depth):
+            if node_id in visited or depth > max_depth:
+                return
+            visited.add(node_id)
+            row = db.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+            if not row:
+                return
+            name, meta = _label_node(row)
+            all_nodes.append({
+                "id": row["id"], "name": name, "description": row["summary"],
+                "status": row["status"], "type": row["type"], "domain": row["domain"],
+                "next_actions": meta.get("next_actions", []) if isinstance(meta, dict) else [],
+            })
+            if depth < max_depth:
+                edges = db.execute(
+                    "SELECT target_id FROM edges WHERE source_id=? AND relation='contains'",
+                    (node_id,)).fetchall()
+                for e in edges:
+                    _collect(e["target_id"], depth + 1)
+
+        _collect(root_id, 0)
+
+        node_ids = {n["id"] for n in all_nodes}
+        all_edges = []
+        if node_ids:
+            ph = ",".join("?" * len(node_ids))
+            edge_rows = db.execute(
+                f"SELECT source_id, target_id, relation FROM edges "
+                f"WHERE source_id IN ({ph}) AND target_id IN ({ph})",
+                list(node_ids) + list(node_ids)).fetchall()
+            for e in edge_rows:
+                all_edges.append({"source_id": e["source_id"], "target_id": e["target_id"], "relation": e["relation"]})
+
+        status_map = {n["id"]: n["status"] for n in all_nodes}
+        ready, in_progress, blocked = [], [], []
+
+        for n in all_nodes:
+            if n["status"] in ("live", "verified", "archived"):
+                continue
+            requires = [e for e in all_edges if e["source_id"] == n["id"] and e["relation"] == "requires"]
+            deps = []
+            all_met = True
+            for req in requires:
+                tgt_st = status_map.get(req["target_id"], "seed")
+                met = tgt_st in ("live", "verified")
+                deps.append({"id": req["target_id"], "met": met})
+                if not met:
+                    all_met = False
+
+            entry = {"id": n["id"], "name": n["name"], "domain": n["domain"], "deps": deps}
+            if n["status"] == "explored":
+                entry["reason"] = "In Bearbeitung"
+                in_progress.append(entry)
+            elif n["status"] == "seed":
+                if not requires or all_met:
+                    entry["reason"] = "Alle Abhaengigkeiten erfuellt" if requires else "Keine Abhaengigkeiten"
+                    ready.append(entry)
+                else:
+                    entry["reason"] = "Wartet auf Abhaengigkeiten"
+                    blocked.append(entry)
+
+        by_status = {}
+        for n in all_nodes:
+            by_status[n["status"]] = by_status.get(n["status"], 0) + 1
+        domains = sorted(set(n["domain"].split(".")[0] for n in all_nodes if n["domain"]))
+
+        return {
+            "nodes": all_nodes, "edges": all_edges,
+            "stats": {"total": len(all_nodes), "by_status": by_status},
+            "domains": domains,
+            "next_actions": {
+                "ready": sorted(ready, key=lambda x: len(x.get("deps", [])), reverse=True),
+                "in_progress": in_progress, "blocked": blocked,
+            },
+            "generated_at": time.time(),
+        }
+    finally:
+        db.close()
+
 _CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS",
          "Access-Control-Allow-Headers": "*", "Cache-Control": "public, max-age=60"}
 
@@ -294,6 +403,15 @@ async def _handle_dashboard(request):
     except FileNotFoundError:
         return HTMLResponse("<h1>dashboard.html not found</h1>", status_code=404)
 
+
+
+async def _handle_orchestration(request):
+    """Serve orchestration data: flat graph + next actions."""
+    root_id = request.query_params.get("root", "wbs_root")
+    depth = min(int(request.query_params.get("depth", "5")), 6)
+    data = build_orchestration_data(root_id, depth)
+    return JSONResponse(data, headers=_CORS)
+
 mcp._custom_starlette_routes.extend([
     Route("/wbs", _handle_wbs, methods=["GET"]),
     Route("/wbs", _handle_wbs_options, methods=["OPTIONS"]),
@@ -305,6 +423,8 @@ mcp._custom_starlette_routes.extend([
     Route("/diary", _handle_diary, methods=["GET"]),
     Route("/diary", _handle_wbs_options, methods=["OPTIONS"]),
     Route("/dashboard", _handle_dashboard, methods=["GET"]),
+    Route("/orchestration", _handle_orchestration, methods=["GET"]),
+    Route("/orchestration", _handle_wbs_options, methods=["OPTIONS"]),
 ])
 
 # ============================================================
