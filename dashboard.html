@@ -192,6 +192,63 @@
   }
   .graph-btn:hover { border-color: var(--primary); color: var(--primary); }
 
+  .edge-toggles {
+    position: absolute;
+    top: 12px;
+    left: 130px;
+    display: flex;
+    gap: 4px;
+    z-index: 5;
+  }
+  .edge-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    background: var(--card);
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    font: 500 10px 'Inter', sans-serif;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all .15s;
+    opacity: .5;
+  }
+  .edge-toggle.active {
+    opacity: 1;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  }
+  .edge-toggle .swatch {
+    width: 14px; height: 3px;
+    border-radius: 2px;
+  }
+  .edge-toggle[data-edge="contains"] .swatch { background: #94a3b8; }
+  .edge-toggle[data-edge="contains"].active { border-color: #94a3b8; color: var(--text); }
+  .edge-toggle[data-edge="requires"] .swatch { background: #f59e0b; border-top: 1px dashed #f59e0b; }
+  .edge-toggle[data-edge="requires"].active { border-color: #f59e0b; color: #92400e; }
+  .edge-toggle[data-edge="extends"] .swatch { background: #3b82f6; }
+  .edge-toggle[data-edge="extends"].active { border-color: #3b82f6; color: #1e40af; }
+  .edge-toggle[data-edge="other"] .swatch { background: #d1d5db; }
+  .edge-toggle[data-edge="other"].active { border-color: #9ca3af; color: var(--text); }
+
+  .edge-line.hidden { display: none; }
+
+  .progress-badge {
+    font: 600 9px 'Inter', sans-serif;
+    fill: var(--text);
+    pointer-events: none;
+    text-anchor: middle;
+  }
+  .progress-bg {
+    fill: var(--card);
+    stroke: var(--border);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+  .progress-arc {
+    pointer-events: none;
+  }
+
   .side-panel {
     width: 380px;
     background: var(--card);
@@ -465,6 +522,12 @@
       <div class="graph-btn" onclick="zoomOut()" title="Zoom -">&minus;</div>
       <div class="graph-btn" onclick="resetZoom()" title="Reset">&#8634;</div>
     </div>
+    <div class="edge-toggles">
+      <div class="edge-toggle active" data-edge="contains"><span class="swatch"></span>Struktur</div>
+      <div class="edge-toggle" data-edge="requires"><span class="swatch"></span>Ben&ouml;tigt</div>
+      <div class="edge-toggle" data-edge="extends"><span class="swatch"></span>Erweitert</div>
+      <div class="edge-toggle" data-edge="other"><span class="swatch"></span>Andere</div>
+    </div>
     <svg id="graph-svg"></svg>
     <div class="graph-legend">
       <div style="font-weight:600;margin-bottom:2px;">Status</div>
@@ -535,6 +598,33 @@ var simulation = null;
 var svg, g, zoom;
 var activeStatusFilter = null;
 var activeDomainFilter = null;
+var edgeVisibility = { contains: true, requires: false, extends: false, other: false };
+
+// Edge toggle handlers
+document.querySelectorAll('.edge-toggle').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var type = btn.dataset.edge;
+    edgeVisibility[type] = !edgeVisibility[type];
+    btn.classList.toggle('active', edgeVisibility[type]);
+    applyEdgeVisibility();
+  });
+});
+
+function applyEdgeVisibility() {
+  if (!g) return;
+  g.selectAll('.edge-line').each(function(d) {
+    var cls = edgeClass(d.relation);
+    var visible = edgeVisibility[cls];
+    d3.select(this).classed('hidden', !visible);
+  });
+}
+
+function edgeClass(rel) {
+  if (rel === 'contains') return 'contains';
+  if (rel === 'requires') return 'requires';
+  if (rel === 'extends') return 'extends';
+  return 'other';
+}
 
 // ============================================================
 // TABS
@@ -584,6 +674,49 @@ function initGraph() {
       .attr('d', 'M0,-3L6,0L0,3')
       .attr('fill', t === 'requires' ? '#f59e0b' : t === 'extends' ? '#3b82f6' : '#94a3b8');
   });
+}
+
+function computeProgress(nodes, edges) {
+  // For each node with contains-edges, compute % of children that are verified/live
+  var nodeStatus = {};
+  nodes.forEach(function(n) { nodeStatus[n.id] = n.status; });
+
+  var children = {};
+  edges.forEach(function(e) {
+    if (e.relation !== 'contains') return;
+    var src = typeof e.source === 'string' ? e.source : e.source.id;
+    var tgt = typeof e.target === 'string' ? e.target : e.target.id;
+    if (!children[src]) children[src] = [];
+    children[src].push(tgt);
+  });
+
+  // Recursive: count all descendants
+  var cache = {};
+  function countDescendants(id) {
+    if (cache[id]) return cache[id];
+    var kids = children[id] || [];
+    var total = 0, done = 0;
+    kids.forEach(function(kid) {
+      var sub = countDescendants(kid);
+      total += sub.total;
+      done += sub.done;
+    });
+    // Count self only for leaf nodes
+    if (kids.length === 0) {
+      total = 1;
+      done = (nodeStatus[id] === 'verified' || nodeStatus[id] === 'live') ? 1 : 0;
+    }
+    cache[id] = { total: total, done: done, pct: total > 0 ? Math.round(done / total * 100) : 0 };
+    return cache[id];
+  }
+
+  var result = {};
+  nodes.forEach(function(n) {
+    if (children[n.id] && children[n.id].length > 0) {
+      result[n.id] = countDescendants(n.id);
+    }
+  });
+  return result;
 }
 
 function renderGraph(data) {
@@ -646,14 +779,6 @@ function renderGraph(data) {
   var w = panel.clientWidth;
   var h = panel.clientHeight;
 
-  // Edge class
-  function edgeClass(rel) {
-    if (rel === 'contains') return 'contains';
-    if (rel === 'requires') return 'requires';
-    if (rel === 'extends') return 'extends';
-    return 'other';
-  }
-
   // Draw edges
   var link = g.append('g').selectAll('line')
     .data(filteredEdges)
@@ -695,16 +820,62 @@ function renderGraph(data) {
       return name.length > 20 ? name.substring(0, 18) + '...' : name;
     });
 
-  // Simulation
+  // Progress badges on parent nodes
+  var progressData = computeProgress(filteredNodes, filteredEdges);
+  node.filter(function(d) { return progressData[d.id] && progressData[d.id].total > 1; })
+    .each(function(d) {
+      var pg = progressData[d.id];
+      var r = Math.max(6, Math.min(20, 6 + (childCount[d.id] || 0) * 2));
+      var group = d3.select(this);
+      var pct = pg.pct;
+      var badgeR = 9;
+      var bx = r * 0.7;
+      var by = -r * 0.7;
+
+      // Background circle
+      group.append('circle')
+        .attr('class', 'progress-bg')
+        .attr('cx', bx).attr('cy', by).attr('r', badgeR);
+
+      // Progress arc
+      if (pct > 0) {
+        var arc = d3.arc()
+          .innerRadius(0)
+          .outerRadius(badgeR)
+          .startAngle(0)
+          .endAngle(pct / 100 * 2 * Math.PI);
+        group.append('path')
+          .attr('class', 'progress-arc')
+          .attr('d', arc)
+          .attr('transform', 'translate(' + bx + ',' + by + ')')
+          .attr('fill', pct === 100 ? '#16a34a' : '#9a7b2e')
+          .attr('opacity', 0.25);
+      }
+
+      // Percentage text
+      group.append('text')
+        .attr('class', 'progress-badge')
+        .attr('x', bx).attr('y', by + 3)
+        .text(pct + '%');
+    });
+
+  // Apply edge visibility
+  applyEdgeVisibility();
+
+  // Simulation - contains edges form the tree structure, others pull lightly
   simulation = d3.forceSimulation(filteredNodes)
     .force('link', d3.forceLink(filteredEdges).id(function(d) { return d.id; }).distance(function(d) {
-      return d.relation === 'contains' ? 60 : 120;
+      if (d.relation === 'contains') return 50;
+      if (d.relation === 'requires') return 150;
+      return 180;
     }).strength(function(d) {
-      return d.relation === 'contains' ? 0.8 : 0.2;
+      if (d.relation === 'contains') return 0.9;
+      if (d.relation === 'requires') return 0.05;
+      return 0.02;
     }))
-    .force('charge', d3.forceManyBody().strength(-200).distanceMax(400))
+    .force('charge', d3.forceManyBody().strength(-150).distanceMax(350))
     .force('center', d3.forceCenter(w / 2, h / 2))
-    .force('collision', d3.forceCollide(25))
+    .force('collision', d3.forceCollide(30))
     .on('tick', function() {
       link
         .attr('x1', function(d) { return d.source.x; })
