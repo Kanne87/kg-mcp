@@ -690,10 +690,13 @@ function computeProgress(nodes, edges) {
     children[src].push(tgt);
   });
 
-  // Recursive: count all descendants
+  // Recursive: count all descendants (with cycle protection)
   var cache = {};
+  var visiting = {};
   function countDescendants(id) {
     if (cache[id]) return cache[id];
+    if (visiting[id]) return { total: 0, done: 0, pct: 0 }; // cycle detected, skip
+    visiting[id] = true;
     var kids = children[id] || [];
     var total = 0, done = 0;
     kids.forEach(function(kid) {
@@ -706,6 +709,7 @@ function computeProgress(nodes, edges) {
       total = 1;
       done = (nodeStatus[id] === 'verified' || nodeStatus[id] === 'live') ? 1 : 0;
     }
+    delete visiting[id];
     cache[id] = { total: total, done: done, pct: total > 0 ? Math.round(done / total * 100) : 0 };
     return cache[id];
   }
