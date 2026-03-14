@@ -200,7 +200,7 @@ def phase_0_hygiene(auto_fix=True):
 
         # --- 3. Verwaiste Nodes: kein einziger Edge ---
         orphans = db.execute("""
-            SELECT n.id, n.domain, n.status, n.summary,
+            SELECT n.id, n.domain, n.status, n.summary, n.kai_note, n.type,
                    CAST((? - n.updated_at) / 86400 AS INTEGER) AS days_stale
             FROM nodes n
             LEFT JOIN edges e1 ON n.id = e1.source_id
@@ -209,13 +209,55 @@ def phase_0_hygiene(auto_fix=True):
             ORDER BY n.updated_at ASC
         """, (now,)).fetchall()
 
+        # Build domain→parent mapping for recommendations
+        domain_parents = {}
+        parent_rows = db.execute("""
+            SELECT DISTINCT n.id, n.domain, n.summary
+            FROM nodes n
+            JOIN edges e ON n.id = e.source_id AND e.relation = 'contains'
+            WHERE n.domain != ''
+            ORDER BY n.domain
+        """).fetchall()
+        for p in parent_rows:
+            dom = p["domain"].split(".")[0] if p["domain"] else ""
+            if dom not in domain_parents:
+                domain_parents[dom] = []
+            domain_parents[dom].append({"id": p["id"], "summary": (p["summary"] or "")[:60]})
+
         for o in orphans:
+            nid = o["id"]
+            dom = (o["domain"] or "").split(".")[0]
+            kai_note = o["kai_note"] or ""
+
+            # Heuristic recommendations
+            suggested = domain_parents.get(dom, [])[:5]
+            rec_type = "review"  # default
+            rec_text = "Manuell prüfen und einordnen oder archivieren."
+
+            if nid.startswith("pattern_") or nid.startswith("workaround_"):
+                rec_type = "archive"
+                rec_text = "Dokumentiertes Muster/Workaround. Inhalt ggf. in kai_note eines verwandten Nodes einarbeiten, dann archivieren."
+            elif nid.startswith("bug_") or nid.startswith("fix_"):
+                rec_type = "archive"
+                rec_text = "Bug-Fix-Dokumentation. Prüfen ob noch relevant, sonst archivieren."
+            elif o["status"] == "verified" and o["days_stale"] > 14:
+                rec_type = "wire"
+                rec_text = "Verifizierter Node ohne Verbindung. Wahrscheinlich an einen WBS-Elternknoten verdrahten."
+            elif o["status"] == "seed" and o["days_stale"] > 21:
+                rec_type = "archive"
+                rec_text = "Alter Seed ohne Edges. Entweder weiterentwickeln und verdrahten, oder archivieren."
+
             findings["orphans"].append({
-                "id": o["id"],
+                "id": nid,
                 "domain": o["domain"],
                 "status": o["status"],
-                "summary": o["summary"][:80],
+                "type": o["type"],
+                "summary": o["summary"],
+                "kai_note": kai_note[:200] if kai_note else "",
                 "days_stale": o["days_stale"],
+                "rec_type": rec_type,
+                "rec_text": rec_text,
+                "suggested_parents": suggested,
             })
         # Verwaiste Nodes werden NICHT auto-gelöscht - zu gefährlich
 
@@ -230,11 +272,23 @@ def phase_0_hygiene(auto_fix=True):
         """, (now, fourteen_days_ago)).fetchall()
 
         for s in stale:
+            # Check if stale seed has edges (it has, otherwise it would be orphan)
+            edge_count = db.execute(
+                "SELECT COUNT(*) as c FROM edges WHERE source_id=? OR target_id=?",
+                (s["id"], s["id"])
+            ).fetchone()["c"]
+            rec_text = "Alter Seed – Status zu explored/verified aktualisieren oder archivieren."
+            if edge_count == 0:
+                rec_text = "Alter Seed ohne Verbindungen – verdrahten oder archivieren."
+            elif s["days_stale"] > 30:
+                rec_text = "Seit >30 Tagen unverändert. Entweder aktivieren oder bewusst parken."
             findings["stale_seeds"].append({
                 "id": s["id"],
                 "domain": s["domain"],
-                "summary": s["summary"][:80],
+                "summary": s["summary"],
                 "days_stale": s["days_stale"],
+                "edge_count": edge_count,
+                "rec_text": rec_text,
             })
         # Stale Seeds werden NICHT auto-geändert - braucht menschliche Entscheidung
 
