@@ -321,6 +321,143 @@ def phase_0_hygiene(auto_fix=True):
         db.close()
 
 
+# === HYGIENE ANALYSE (nach phase_0_hygiene, vor Phase 1) ===
+
+def hygiene_analyze_node(node_id):
+    """Sonnet-basierte Tiefenanalyse eines Hygiene-Eintrags.
+    
+    Sammelt Kontext: Node-Daten, Domain-Nachbarn, potenzielle Eltern,
+    ähnliche Nodes. Lässt Sonnet ein strukturiertes Reasoning erstellen.
+    
+    Returns: {node_id, reasoning, action, action_detail, confidence}
+    """
+    db = _db()
+    try:
+        now = time.time()
+        
+        # 1. Vollständige Node-Daten
+        node = db.execute(
+            "SELECT id, domain, status, type, summary, kai_note, description, "
+            "CAST((? - updated_at) / 86400 AS INTEGER) AS days_stale, "
+            "CAST((? - created_at) / 86400 AS INTEGER) AS days_old "
+            "FROM nodes WHERE id=?",
+            (now, now, node_id)
+        ).fetchone()
+        if not node:
+            return {"error": f"Node {node_id} not found"}
+        
+        # 2. Edges dieses Nodes (falls doch welche existieren – für stale seeds)
+        edges = db.execute(
+            "SELECT source_id, target_id, relation FROM edges "
+            "WHERE source_id=? OR target_id=? LIMIT 10",
+            (node_id, node_id)
+        ).fetchall()
+        edge_list = [{"src": e["source_id"], "tgt": e["target_id"], "rel": e["relation"]} for e in edges]
+        
+        # 3. Potenzielle Eltern-Nodes (gleiche Domain, haben contains-Edges)
+        dom_base = (node["domain"] or "").split(".")[0]
+        parents = db.execute("""
+            SELECT DISTINCT n.id, n.summary, n.status,
+                   COUNT(e.target_id) as child_count
+            FROM nodes n
+            JOIN edges e ON n.id = e.source_id AND e.relation = 'contains'
+            WHERE n.domain LIKE ? AND n.id != ?
+            GROUP BY n.id
+            ORDER BY child_count DESC
+            LIMIT 8
+        """, (f"{dom_base}%", node_id)).fetchall()
+        parent_list = [{"id": p["id"], "summary": (p["summary"] or "")[:80], "status": p["status"], "children": p["child_count"]} for p in parents]
+        
+        # 4. Ähnliche Nodes (Namens-Ähnlichkeit)
+        # Einfache Heuristik: Wörter aus der Node-ID suchen
+        id_parts = node_id.replace("-", "_").split("_")
+        similar = []
+        for part in id_parts:
+            if len(part) < 4:
+                continue
+            matches = db.execute(
+                "SELECT id, summary, status, domain FROM nodes "
+                "WHERE id LIKE ? AND id != ? LIMIT 3",
+                (f"%{part}%", node_id)
+            ).fetchall()
+            for m in matches:
+                if m["id"] not in [s["id"] for s in similar]:
+                    similar.append({"id": m["id"], "summary": (m["summary"] or "")[:80], "status": m["status"], "domain": m["domain"]})
+        similar = similar[:6]
+        
+        # 5. Gesetze aus state
+        state_row = db.execute("SELECT custom FROM state WHERE id=1").fetchone()
+        gesetze_text = ""
+        if state_row and state_row["custom"]:
+            try:
+                custom = json.loads(state_row["custom"])
+                gesetze = custom.get("gesetze", [])
+                gesetze_text = "\n".join(f"G{i+1}: {g}" for i, g in enumerate(gesetze))
+            except:
+                pass
+        
+        # 6. Prompt bauen
+        prompt = f"""Du analysierst einen Node im Knowledge-Graphen von Kai Lohmann.
+Kai ist Versicherungsmakler und baut ein digitales Ökosystem (lo-board CRM, K-AI Orchestrator, diverse Tools).
+Der Graph bildet sein gesamtes Denk- und Arbeitsfeld ab.
+
+## Node
+- ID: {node["id"]}
+- Domain: {node["domain"]}
+- Status: {node["status"]}
+- Typ: {node["type"]}
+- Alter: {node["days_old"]} Tage (seit Erstellung)
+- Letzte Aktualisierung: vor {node["days_stale"]} Tagen
+- Summary: {node["summary"] or "(leer)"}
+- kai_note: {(node["kai_note"] or "(leer)")[:500]}
+- Description: {(node["description"] or "(leer)")[:300]}
+
+## Aktuelle Edges ({len(edge_list)})
+{json.dumps(edge_list, ensure_ascii=False) if edge_list else "(keine – verwaister Node)"}
+
+## Potenzielle Eltern in Domain "{dom_base}" (haben contains-Edges)
+{json.dumps(parent_list, ensure_ascii=False, indent=1) if parent_list else "(keine gefunden)"}
+
+## Ähnliche Nodes (Namens-Ähnlichkeit)
+{json.dumps(similar, ensure_ascii=False, indent=1) if similar else "(keine gefunden)"}
+
+## Kais Arbeitsgesetze
+{gesetze_text[:1000] if gesetze_text else "(nicht geladen)"}
+
+## Aufgabe
+Analysiere diesen Node und gib eine fundierte Empfehlung. Beantworte:
+
+1. **Was ist das?** – Worum geht es bei diesem Node? (1-2 Sätze)
+2. **Warum ist er verwaist/stale?** – Hypothese warum keine Edges existieren oder er veraltet ist
+3. **Empfehlung** – Eine von: ARCHIVE, WIRE, PROMOTE, REVIEW, MERGE
+   - ARCHIVE: Node hat keinen weiteren Nutzen, Wissen ggf. in anderen Node übernehmen
+   - WIRE: Node gehört an einen bestimmten Eltern-Node (nenne welchen und warum)
+   - PROMOTE: Status sollte aktualisiert werden (z.B. seed→explored)
+   - REVIEW: Braucht Kais persönliche Entscheidung, nicht automatisierbar
+   - MERGE: Inhalt ist Duplikat eines anderen Nodes (nenne welchen)
+4. **Begründung** – 2-4 Sätze warum genau diese Empfehlung
+
+Antworte NUR als JSON:
+{{"what": "...", "why_orphan": "...", "action": "ARCHIVE|WIRE|PROMOTE|REVIEW|MERGE", "target_node": "node_id oder null", "reasoning": "...", "confidence": "high|medium|low"}}"""
+
+        # 7. LLM Call
+        raw = _llm("claude-sonnet-4-20250514", prompt, max_tokens=600)
+        result = _parse_json(raw)
+        result["node_id"] = node_id
+        
+        logger.info(f"Hygiene-Analyse {node_id}: {result.get('action')} ({result.get('confidence')})")
+        return result
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Hygiene-Analyse JSON-Fehler für {node_id}: {e}")
+        return {"node_id": node_id, "error": f"LLM gab kein valides JSON: {str(e)}", "raw": raw[:500] if 'raw' in dir() else ""}
+    except Exception as e:
+        logger.error(f"Hygiene-Analyse Fehler für {node_id}: {e}", exc_info=True)
+        return {"node_id": node_id, "error": str(e)}
+    finally:
+        db.close()
+
+
 # ==============================================================
 # PHASE 1: INVENTUR
 # ==============================================================
