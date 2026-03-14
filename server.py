@@ -388,6 +388,107 @@ async def _handle_sleep_hygiene(request):
         return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
 
 
+async def _handle_hygiene_action(request):
+    """Execute a hygiene action on a node: archive, wire (create edge), or note (update kai_note)."""
+    try:
+        body = await request.json()
+        action = body.get("action")
+        node_id = body.get("node_id")
+        if not action or not node_id:
+            return JSONResponse({"error": "action and node_id required"}, status_code=400, headers=_CORS)
+
+        db = get_db()
+        now = time.time()
+
+        # Verify node exists
+        node = db.execute("SELECT id, status, kai_note FROM nodes WHERE id=?", (node_id,)).fetchone()
+        if not node:
+            db.close()
+            return JSONResponse({"error": f"Node {node_id} not found"}, status_code=404, headers=_CORS)
+
+        result = {"node_id": node_id, "action": action}
+
+        if action == "archive":
+            db.execute("UPDATE nodes SET status='archived', updated_at=? WHERE id=?", (now, node_id))
+            db.commit()
+            result["message"] = f"{node_id} archiviert."
+
+        elif action == "wire":
+            parent_id = body.get("parent_id")
+            relation = body.get("relation", "contains")
+            if not parent_id:
+                db.close()
+                return JSONResponse({"error": "parent_id required for wire action"}, status_code=400, headers=_CORS)
+            # Check parent exists
+            parent = db.execute("SELECT id FROM nodes WHERE id=?", (parent_id,)).fetchone()
+            if not parent:
+                db.close()
+                return JSONResponse({"error": f"Parent {parent_id} not found"}, status_code=404, headers=_CORS)
+            # Check if edge already exists
+            existing = db.execute(
+                "SELECT 1 FROM edges WHERE source_id=? AND target_id=? AND relation=?",
+                (parent_id, node_id, relation)
+            ).fetchone()
+            if existing:
+                db.close()
+                return JSONResponse({"error": f"Edge {parent_id}→{relation}→{node_id} already exists"}, status_code=409, headers=_CORS)
+            db.execute(
+                "INSERT INTO edges (source_id, target_id, relation, weight, note, created_at, updated_at) VALUES (?, ?, ?, 0.5, '', ?, ?)",
+                (parent_id, node_id, relation, now, now)
+            )
+            db.execute("UPDATE nodes SET updated_at=? WHERE id=?", (now, node_id))
+            db.commit()
+            result["message"] = f"{parent_id} →{relation}→ {node_id} erstellt."
+
+        elif action == "note":
+            note_text = body.get("text", "")
+            if not note_text:
+                db.close()
+                return JSONResponse({"error": "text required for note action"}, status_code=400, headers=_CORS)
+            # Append to existing kai_note
+            existing_note = node["kai_note"] or ""
+            new_note = f"{existing_note}\n[{time.strftime('%Y-%m-%d')}] {note_text}".strip()
+            db.execute("UPDATE nodes SET kai_note=?, updated_at=? WHERE id=?", (new_note, now, node_id))
+            db.commit()
+            result["message"] = f"Notiz zu {node_id} hinzugefügt."
+            result["kai_note"] = new_note
+
+        elif action == "promote":
+            new_status = body.get("status", "explored")
+            if new_status not in ("explored", "verified", "live", "deep"):
+                db.close()
+                return JSONResponse({"error": f"Invalid status: {new_status}"}, status_code=400, headers=_CORS)
+            db.execute("UPDATE nodes SET status=?, updated_at=? WHERE id=?", (new_status, now, node_id))
+            db.commit()
+            result["message"] = f"{node_id} → {new_status}."
+
+        else:
+            db.close()
+            return JSONResponse({"error": f"Unknown action: {action}"}, status_code=400, headers=_CORS)
+
+        db.close()
+        return JSONResponse(result, headers=_CORS)
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
+
+
+async def _handle_hygiene_analyze(request):
+    """Sonnet-basierte Tiefenanalyse eines einzelnen Hygiene-Eintrags."""
+    try:
+        body = await request.json()
+        node_id = body.get("node_id")
+        if not node_id:
+            return JSONResponse({"error": "node_id required"}, status_code=400, headers=_CORS)
+        
+        from sleep import hygiene_analyze_node
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: hygiene_analyze_node(node_id))
+        return JSONResponse(result, headers=_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
+
+
 # --- Diary + Dashboard REST endpoints ---
 
 async def _handle_diary(request):
@@ -432,6 +533,10 @@ mcp._custom_starlette_routes.extend([
     Route("/sleep/trigger", _handle_sleep_options, methods=["OPTIONS"]),
     Route("/sleep/hygiene", _handle_sleep_hygiene, methods=["POST"]),
     Route("/sleep/hygiene", _handle_sleep_options, methods=["OPTIONS"]),
+    Route("/hygiene/action", _handle_hygiene_action, methods=["POST"]),
+    Route("/hygiene/action", _handle_sleep_options, methods=["OPTIONS"]),
+    Route("/hygiene/analyze", _handle_hygiene_analyze, methods=["POST"]),
+    Route("/hygiene/analyze", _handle_sleep_options, methods=["OPTIONS"]),
     Route("/diary", _handle_diary, methods=["GET"]),
     Route("/diary", _handle_wbs_options, methods=["OPTIONS"]),
     Route("/dashboard", _handle_dashboard, methods=["GET"]),
