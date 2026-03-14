@@ -1002,7 +1002,7 @@ function renderHygiene(data) {
       var staleClass = o.days_stale > 14 ? 'stale-old' : o.days_stale > 7 ? 'stale-warn' : '';
       h += '<div class="hygiene-card">';
       h += '<div style="display:flex;align-items:center;justify-content:space-between;">';
-      h += '<span class="hygiene-card-id" onclick="focusNode('' + esc(o.id) + '')">' + esc(o.id) + '</span>';
+      h += '<span class="hygiene-card-id" onclick="focusNode(\'' + esc(o.id) + '\')">' + esc(o.id) + '</span>';
       if (staleClass) h += '<span class="hygiene-stale-badge ' + staleClass + '">' + o.days_stale + 'd</span>';
       h += '</div>';
       h += '<div class="hygiene-card-meta">' + esc(o.domain) + ' &middot; ' + esc(o.status) + '</div>';
@@ -1020,7 +1020,7 @@ function renderHygiene(data) {
       var staleClass = s.days_stale > 30 ? 'stale-old' : 'stale-warn';
       h += '<div class="hygiene-card">';
       h += '<div style="display:flex;align-items:center;justify-content:space-between;">';
-      h += '<span class="hygiene-card-id" onclick="focusNode('' + esc(s.id) + '')">' + esc(s.id) + '</span>';
+      h += '<span class="hygiene-card-id" onclick="focusNode(\'' + esc(s.id) + '\')">' + esc(s.id) + '</span>';
       h += '<span class="hygiene-stale-badge ' + staleClass + '">' + s.days_stale + 'd</span>';
       h += '</div>';
       h += '<div class="hygiene-card-meta">' + esc(s.domain) + '</div>';
