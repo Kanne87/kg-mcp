@@ -521,23 +521,84 @@ def phase_1_collect():
 
 
 def phase_1_analyze(inventory):
-    """Sonnet analysiert die Tagesdaten."""
+    """Sonnet analysiert die Tagesdaten + prüft Gesetze gegen Tagesaktivitäten."""
+    
+    # Gesetze aus state.custom extrahieren für explizite Prüfung
+    gesetze_text = ""
+    selbstkorrektur_text = ""
+    try:
+        custom = json.loads(inventory.get("state", {}).get("custom", "{}"))
+        gesetze = custom.get("gesetze", [])
+        selbstkorrektur = custom.get("selbstkorrektur", [])
+        gesetze_text = "\n".join(f"G{i+1}: {g}" for i, g in enumerate(gesetze))
+        selbstkorrektur_text = "\n".join(f"S{i+1}: {s}" for i, s in enumerate(selbstkorrektur))
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Session-Docs kompakt zusammenfassen (spart Tokens)
+    docs_summary = []
+    for d in inventory.get("session_docs", []):
+        docs_summary.append({
+            "session": d["session"],
+            "title": d["title"],
+            "content": d["content"][:1500],
+        })
+
+    # Recent Nodes kompakt
+    nodes_summary = [
+        {"id": n["id"], "domain": n["domain"], "status": n["status"], "summary": n.get("summary", "")[:100]}
+        for n in inventory.get("recent_nodes", [])
+    ]
+
     prompt = (
         "Du bist das Nachtbewusstsein eines Knowledge Graphen. "
         "Der Graph geht schlafen.\n\n"
-        "Inventur des Tages:\n"
-        f"{json.dumps(inventory, ensure_ascii=False, indent=2)}\n\n"
+        "## Tagesaktivitäten\n"
+        f"{json.dumps(docs_summary, ensure_ascii=False, indent=1)}\n\n"
+        "## Veränderte Nodes heute\n"
+        f"{json.dumps(nodes_summary, ensure_ascii=False, indent=1)}\n\n"
+        "## Graph-Statistiken\n"
+        f"{json.dumps(inventory.get('stats', {}), ensure_ascii=False)}\n\n"
+        "## Hygiene-Ergebnis\n"
+        f"{json.dumps(inventory.get('hygiene', {}).get('summary', {}), ensure_ascii=False)}\n\n"
+        "## Kais Arbeitsgesetze\n"
+        f"{gesetze_text}\n\n"
+        "## Bekannte Verzerrungen (Selbstkorrektur)\n"
+        f"{selbstkorrektur_text}\n\n"
         "Aufgabe:\n"
-        "1. Fasse zusammen was heute passiert ist\n"
-        "2. Identifiziere Muster zwischen den Aktivitaeten\n"
-        "3. Offene Faeden: was angefangen aber nicht fertig?\n"
-        "4. Graph-Hygiene: Nodes zusammenlegen? Fehlende Edges?\n\n"
+        "1. Fasse zusammen was heute passiert ist (2-3 Sätze)\n"
+        "2. Identifiziere Muster zwischen den Aktivitäten\n"
+        "3. Offene Fäden: was angefangen aber nicht fertig?\n"
+        "4. Graph-Hygiene: Nodes zusammenlegen? Fehlende Edges?\n"
+        "5. GESETZE-CHECK: Prüfe JEDES Gesetz (G1-G" + str(len(gesetze_text.splitlines())) + ") "
+        "gegen die heutigen Aktivitäten. Für jedes Gesetz:\n"
+        "   - Wurde es heute befolgt, verletzt, oder war es nicht relevant?\n"
+        "   - Ist es noch aktuell oder veraltet?\n"
+        "   - Gibt es einen Widerspruch zu einem anderen Gesetz?\n"
+        "   Berichte NUR Auffälligkeiten (Verletzungen, Veraltung, Konflikte). "
+        "Gesetze die befolgt wurden oder nicht relevant waren: nicht auflisten.\n"
+        "6. SELBSTKORREKTUR-CHECK: Wurde heute eine bekannte Verzerrung ausgelöst? "
+        "Gibt es eine neue Verzerrung die noch nicht erfasst ist?\n\n"
         "Antworte NUR als JSON ohne Markdown-Fences:\n"
-        '{"zusammenfassung":"...","themen_heute":["..."],'
-        '"muster":["..."],"offene_faeden":["..."],"graph_hygiene":["..."]}'
+        '{"zusammenfassung":"...",'
+        '"themen_heute":["..."],'
+        '"muster":["..."],'
+        '"offene_faeden":["..."],'
+        '"graph_hygiene":["..."],'
+        '"gesetze_check":{'
+        '"verletzungen":[{"gesetz":"G3","beschreibung":"...","schwere":"leicht|mittel|schwer"}],'
+        '"veraltet":[{"gesetz":"G5","grund":"...","vorschlag":"..."}],'
+        '"konflikte":[{"gesetze":["G3","G7"],"beschreibung":"..."}],'
+        '"neue_kandidaten":[{"vorschlag":"...","begruendung":"..."}]'
+        '},'
+        '"selbstkorrektur_check":{'
+        '"ausgeloest":[{"id":"S3","beschreibung":"..."}],'
+        '"neue_verzerrung":[{"vorschlag":"...","begruendung":"..."}]'
+        '}'
+        '}'
     )
 
-    text = _llm("claude-sonnet-4-20250514", prompt, 2000)
+    text = _llm("claude-sonnet-4-20250514", prompt, 3000)
     try:
         return _parse_json(text)
     except (json.JSONDecodeError, IndexError):
@@ -547,6 +608,8 @@ def phase_1_analyze(inventory):
             "muster": [],
             "offene_faeden": [],
             "graph_hygiene": [],
+            "gesetze_check": {"verletzungen": [], "veraltet": [], "konflikte": [], "neue_kandidaten": []},
+            "selbstkorrektur_check": {"ausgeloest": [], "neue_verzerrung": []},
             "_raw": True,
         }
 
@@ -628,6 +691,37 @@ def phase_3_persist(traum, analyse, inventory):
         lines += ["\n### Graph-Hygiene"]
         lines += [f"- {h}" for h in analyse.get("graph_hygiene", [])]
 
+        # Gesetze-Check Ergebnisse
+        gc = analyse.get("gesetze_check", {})
+        if gc.get("verletzungen") or gc.get("veraltet") or gc.get("konflikte") or gc.get("neue_kandidaten"):
+            lines += ["\n### Gesetze-Check"]
+            if gc.get("verletzungen"):
+                lines += ["**Verletzungen:**"]
+                for v in gc["verletzungen"]:
+                    lines += [f"- {v.get('gesetz','?')}: {v.get('beschreibung','')} [{v.get('schwere','?')}]"]
+            if gc.get("veraltet"):
+                lines += ["**Veraltet:**"]
+                for v in gc["veraltet"]:
+                    lines += [f"- {v.get('gesetz','?')}: {v.get('grund','')} → {v.get('vorschlag','')}"]
+            if gc.get("konflikte"):
+                lines += ["**Konflikte:**"]
+                for k in gc["konflikte"]:
+                    lines += [f"- {', '.join(k.get('gesetze',[]))}: {k.get('beschreibung','')}"]
+            if gc.get("neue_kandidaten"):
+                lines += ["**Neue Gesetze-Kandidaten:**"]
+                for n in gc["neue_kandidaten"]:
+                    lines += [f"- {n.get('vorschlag','')}: {n.get('begruendung','')}"]
+
+        sc = analyse.get("selbstkorrektur_check", {})
+        if sc.get("ausgeloest") or sc.get("neue_verzerrung"):
+            lines += ["\n### Selbstkorrektur-Check"]
+            if sc.get("ausgeloest"):
+                for s in sc["ausgeloest"]:
+                    lines += [f"- {s.get('id','?')} ausgelöst: {s.get('beschreibung','')}"]
+            if sc.get("neue_verzerrung"):
+                for n in sc["neue_verzerrung"]:
+                    lines += [f"- NEU: {n.get('vorschlag','')}: {n.get('begruendung','')}"]
+
         content = "\n".join(lines)
         doc_id = str(uuid.uuid4())[:8]
         doc_title = f"Traum - {datum}: {titel}"
@@ -651,7 +745,7 @@ def phase_3_persist(traum, analyse, inventory):
         db.close()
 
 
-def phase_3_email(persist_result, traum):
+def phase_3_email(persist_result, traum, analyse=None):
     """Traum-E-Mail senden."""
     host = os.environ.get("SMTP_HOST")
     port = int(os.environ.get("SMTP_PORT", "587"))
@@ -692,6 +786,46 @@ def phase_3_email(persist_result, traum):
         '<hr style="border:1px solid #d0cdc4;">'
         '<h2 style="color:#9a7b2e;">Fokus morgen</h2>'
         f"<p>{fokus}</p>"
+    )
+
+    # Gesetze-Check Abschnitt
+    if analyse:
+        gc = analyse.get("gesetze_check", {})
+        sc = analyse.get("selbstkorrektur_check", {})
+        has_findings = (gc.get("verletzungen") or gc.get("veraltet") or
+                        gc.get("konflikte") or gc.get("neue_kandidaten") or
+                        sc.get("ausgeloest") or sc.get("neue_verzerrung"))
+        if has_findings:
+            html += '<hr style="border:1px solid #d0cdc4;">'
+            html += '<h2 style="color:#9a7b2e;">\U0001f4dc Gesetze-Check</h2>'
+            if gc.get("verletzungen"):
+                html += '<h3 style="color:#dc2626;">Verletzungen</h3><ul>'
+                for v in gc["verletzungen"]:
+                    schwere_color = "#dc2626" if v.get("schwere") == "schwer" else "#f59e0b" if v.get("schwere") == "mittel" else "#6a6a7a"
+                    html += f'<li><strong style="color:{schwere_color};">{v.get("gesetz","?")}</strong>: {v.get("beschreibung","")}</li>'
+                html += '</ul>'
+            if gc.get("veraltet"):
+                html += '<h3 style="color:#f59e0b;">Veraltete Gesetze</h3><ul>'
+                for v in gc["veraltet"]:
+                    html += f'<li><strong>{v.get("gesetz","?")}</strong>: {v.get("grund","")} &rarr; {v.get("vorschlag","")}</li>'
+                html += '</ul>'
+            if gc.get("konflikte"):
+                html += '<h3 style="color:#7c3aed;">Konflikte</h3><ul>'
+                for k in gc["konflikte"]:
+                    html += f'<li><strong>{", ".join(k.get("gesetze",[]))}</strong>: {k.get("beschreibung","")}</li>'
+                html += '</ul>'
+            if gc.get("neue_kandidaten"):
+                html += '<h3 style="color:#16a34a;">Neue Kandidaten</h3><ul>'
+                for n in gc["neue_kandidaten"]:
+                    html += f'<li><strong>{n.get("vorschlag","")}</strong>: {n.get("begruendung","")}</li>'
+                html += '</ul>'
+            if sc.get("ausgeloest"):
+                html += '<h3 style="color:#f59e0b;">Verzerrungen ausgelöst</h3><ul>'
+                for s in sc["ausgeloest"]:
+                    html += f'<li><strong>{s.get("id","?")}</strong>: {s.get("beschreibung","")}</li>'
+                html += '</ul>'
+
+    html += (
         '<hr style="border:1px solid #d0cdc4;">'
         '<p style="color:#6a6a7a;font-size:12px;">KG-MCP Schlaf-Workflow</p>'
         "</body></html>"
@@ -737,6 +871,9 @@ def phase_3b_diary(analyse, inventory, traum):
         "Was wurde konkret erreicht oder umgesetzt?\n\n"
         "## Offene Punkte\n"
         "Was wartet noch auf Arbeit?\n\n"
+        "## Gesetze-Check\n"
+        "Falls die Tagesanalyse Gesetze-Verletzungen, veraltete Gesetze oder "
+        "neue Kandidaten enthält: hier kurz aufführen. Sonst weglassen.\n\n"
         "## Naechste Schritte\n"
         "Was sollte als naechstes passieren?\n\n"
         "Halte es kurz, konkret, nuetzlich. Keine Poesie, kein Fuelltext. "
@@ -837,7 +974,7 @@ def run_sleep_cycle():
         # Phase 3
         logger.info("Phase 3: Umsetzung...")
         persist = phase_3_persist(traum, analyse, inventory)
-        email_ok = phase_3_email(persist, traum)
+        email_ok = phase_3_email(persist, traum, analyse)
 
         # Phase 3b: Projekt-Tagebuch
         logger.info("Phase 3b: Projekt-Tagebuch...")
