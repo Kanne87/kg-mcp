@@ -435,6 +435,7 @@ mcp._custom_starlette_routes.extend([
     Route("/diary", _handle_diary, methods=["GET"]),
     Route("/diary", _handle_wbs_options, methods=["OPTIONS"]),
     Route("/dashboard", _handle_dashboard, methods=["GET"]),
+    Route("/dash", _handle_dashboard, methods=["GET"]),
     Route("/orchestration", _handle_orchestration, methods=["GET"]),
     Route("/orchestration", _handle_wbs_options, methods=["OPTIONS"]),
 ])
