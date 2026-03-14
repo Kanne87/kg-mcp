@@ -386,11 +386,11 @@ def hygiene_analyze_node(node_id):
         similar = similar[:6]
         
         # 5. Gesetze aus state
-        state_row = db.execute("SELECT custom FROM state WHERE id=1").fetchone()
+        state_row = db.execute("SELECT value FROM state WHERE key='custom'").fetchone()
         gesetze_text = ""
-        if state_row and state_row["custom"]:
+        if state_row and state_row["value"]:
             try:
-                custom = json.loads(state_row["custom"])
+                custom = json.loads(state_row["value"])
                 gesetze = custom.get("gesetze", [])
                 gesetze_text = "\n".join(f"G{i+1}: {g}" for i, g in enumerate(gesetze))
             except:
