@@ -402,6 +402,40 @@
   .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* Services Launcher */
+  .svc-category { margin-bottom: 6px; }
+  .svc-category-btn {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 8px 4px; background: none; border: none; cursor: pointer;
+    font: 600 12px 'Playfair Display', Georgia, serif; color: var(--text); text-align: left;
+  }
+  .svc-category-btn .chevron {
+    display: inline-block; font-size: 10px; transition: transform .2s; color: var(--muted);
+  }
+  .svc-category-btn .chevron.open { transform: rotate(90deg); }
+  .svc-category-btn .count { font: 500 10px 'Inter'; color: var(--primary); margin-left: 2px; }
+  .svc-items { overflow: hidden; transition: max-height .3s ease; padding-left: 8px; }
+  .svc-items.collapsed { max-height: 0 !important; }
+  .svc-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 12px; margin-bottom: 4px; border-radius: 8px;
+    background: var(--card); border: 1px solid var(--border-light);
+    text-decoration: none; color: var(--text); transition: all .15s; cursor: pointer;
+  }
+  .svc-item:hover { border-color: var(--border); box-shadow: 0 1px 6px rgba(154,123,46,.08); transform: translateY(-1px); }
+  .svc-item-name { font: 600 12px 'Inter'; color: var(--text); }
+  .svc-item-desc { font: 400 10px 'Inter'; color: var(--muted); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .svc-status {
+    display: inline-block; padding: 1px 6px; font: 600 8px 'Inter'; letter-spacing: .06em;
+    text-transform: uppercase; border-radius: 3px; white-space: nowrap; line-height: 14px;
+  }
+  .svc-status-live { background: #e8f5e8; color: #2d7a2d; border: 1px solid #a8d8a8; }
+  .svc-status-mvp { background: #fff8e1; color: #9a7b2e; border: 1px solid #e8d89a; }
+  .svc-status-parkplatz { background: var(--surface); color: #8a8a8a; border: 1px solid var(--border); }
+  .svc-open { font: 500 9px 'Inter'; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); transition: color .15s; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .svc-item:hover .svc-open { color: var(--primary); }
+  .svc-separator { border: none; border-top: 1px solid var(--border-light); margin: 2px 4px; }
+
   @media (max-width: 900px) {
     .side-panel { width: 100%; max-height: 50vh; border-left: none; border-top: 1px solid var(--border); }
     .main { flex-direction: column; }
@@ -454,6 +488,7 @@
       <div class="side-tab active" data-tab="actions">N&auml;chste Schritte</div>
       <div class="side-tab" data-tab="detail">Details</div>
       <div class="side-tab" data-tab="diary">Tagebuch</div>
+      <div class="side-tab" data-tab="services">Services</div>
     </div>
     <div class="side-content">
       <div class="tab-panel active" id="tab-actions">
@@ -475,6 +510,22 @@
       <div class="tab-panel" id="tab-diary">
         <div id="diary-content">
           <div class="loading"><div class="spinner"></div> Tagebuch laden...</div>
+        </div>
+      </div>
+      <div class="tab-panel" id="tab-services">
+        <div id="services-content">
+          <div style="margin-bottom:14px">
+            <div style="position:relative">
+              <input type="text" id="service-search" placeholder="Service suchen&hellip;"
+                style="width:100%;padding:8px 12px 8px 32px;font:400 12px 'Inter',sans-serif;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);outline:none;box-sizing:border-box;"
+                onfocus="this.style.borderColor='var(--primary)'" onblur="this.style.borderColor='var(--border)'" oninput="filterServices()">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="position:absolute;left:10px;top:50%;transform:translateY(-50%)">
+                <circle cx="6" cy="6" r="4" stroke="#aaa8a0" stroke-width="1.3"/><path d="M9 9L12 12" stroke="#aaa8a0" stroke-width="1.3" stroke-linecap="round"/>
+              </svg>
+            </div>
+          </div>
+          <div id="services-list"></div>
+          <div style="font:400 10px 'Inter';color:var(--muted);text-align:center;margin-top:12px;letter-spacing:.03em">Alle Links &ouml;ffnen in neuem Tab</div>
         </div>
       </div>
     </div>
@@ -761,7 +812,65 @@ function init() {
     .catch(function() { document.getElementById('diary-content').innerHTML = '<div class="empty-state">Tagebuch nicht verf&uuml;gbar</div>'; });
 }
 
+var SERVICE_DATA = [
+  { category: 'Berater-Tools', icon: '\uD83D\uDCBC', items: [
+    { name: 'lo-board', url: 'https://app.kailohmann.de', desc: 'CRM & Workflow f\u00fcr Versicherungsmakler', status: 'live' },
+    { name: 'Immo-Rechner', url: 'https://immo.kailohmann.de', desc: 'Investitionsrechner Neubauwohnungen', status: 'live' },
+    { name: 'Fondspolice-Rechner', url: 'https://fondspolice.kailohmann.de', desc: 'Fondspolice vs. Direktdepot', status: 'live' },
+    { name: 'Basisrente-Tool', url: 'https://basisrente.kailohmann.de', desc: 'Reinvest-Rechner mit EkSt-Rechner', status: 'live' },
+    { name: 'Company Research', url: 'https://research.kailohmann.de', desc: 'Handelsregister, Bundesanzeiger, Insolvenz', status: 'live' }
+  ]},
+  { category: 'Pers\u00f6nliche Tools', icon: '\uD83C\uDFCB\uFE0F', items: [
+    { name: 'KAI FIT', url: 'https://fitness.kailohmann.de', desc: 'PPL-Trainingsplan John Reed', status: 'live' },
+    { name: 'HN News', url: 'https://news.kailohmann.de', desc: 'Personalisierter Hacker News Digest', status: 'live' },
+    { name: 'H\u00f6rbuch-Generator', url: 'https://audiobooks.kailohmann.de', desc: 'PDF \u2192 Piper TTS \u2192 Audiobook', status: 'parkplatz' }
+  ]},
+  { category: 'KI & Orchestrierung', icon: '\uD83E\uDDE0', items: [
+    { name: 'Orchestrierungs-Dashboard', url: 'https://kg-mcp.kailohmann.de/dashboard', desc: 'WBS Force-Graph mit Edge-Toggles', status: 'live' },
+    { name: 'K-AI Orchestrator', url: 'https://kai.kailohmann.de', desc: 'Haiku-Triage \u2192 Modell-Routing', status: 'mvp' }
+  ]},
+  { category: 'Infrastruktur', icon: '\uD83D\uDD27', items: [
+    { name: 'Coolify', url: 'https://coolify.kailohmann.de', desc: 'Container-Orchestrierung Hetzner', status: 'live' },
+    { name: 'N8N', url: 'https://n8n.kailohmann.de', desc: 'Workflow-Automatisierung', status: 'live' },
+    { name: 'Paperless-ngx', url: 'https://paperless.kailohmann.de', desc: 'Dokumentenmanagement mit OCR', status: 'live' },
+    { name: 'Nextcloud', url: 'https://cloud.kailohmann.de', desc: 'Dateien, Kalender, Kontakte', status: 'live' },
+    { name: 'Firefly III', url: 'https://firefly.kailohmann.de', desc: 'Finanzverwaltung & Buchhaltung', status: 'live' },
+    { name: 'Authentik', url: 'https://auth.kailohmann.de', desc: 'SSO & OIDC Identity Provider', status: 'live' },
+    { name: 'Outline', url: 'https://outline.kailohmann.de', desc: 'Wiki & Destillate', status: 'live' },
+    { name: 'Documenso', url: 'https://sign.kailohmann.de', desc: 'Digitale Unterschriften', status: 'live' }
+  ]}
+];
+var svcOpenState = { 0: true, 1: false, 2: false, 3: false };
+function renderServices(filter) {
+  var el = document.getElementById('services-list'), h = '', extSvg = '<svg width="12" height="12" viewBox="0 0 14 14" fill="none" style="flex-shrink:0"><path d="M10.5 7.58V11.08C10.5 11.39 10.38 11.68 10.16 11.91C9.93 12.13 9.64 12.25 9.33 12.25H2.92C2.61 12.25 2.32 12.13 2.09 11.91C1.87 11.68 1.75 11.39 1.75 11.08V4.67C1.75 4.36 1.87 4.07 2.09 3.84C2.32 3.62 2.61 3.5 2.92 3.5H6.42" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.75 1.75H12.25V5.25" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.83 8.17L12.25 1.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var q = (filter || '').toLowerCase();
+  SERVICE_DATA.forEach(function(cat, ci) {
+    var items = cat.items.filter(function(it) { return !q || it.name.toLowerCase().indexOf(q) >= 0 || it.desc.toLowerCase().indexOf(q) >= 0; });
+    if (!items.length) return;
+    var open = q ? true : !!svcOpenState[ci];
+    h += '<div class="svc-category" data-ci="'+ci+'">';
+    h += '<button class="svc-category-btn" onclick="toggleSvcCat('+ci+')"><span class="chevron '+(open?'open':'')+'">\u25B6</span> '+cat.icon+' '+esc(cat.category)+' <span class="count">'+items.length+'</span></button>';
+    h += '<div class="svc-items '+(open?'':'collapsed')+'" style="max-height:'+(items.length*52)+'px">';
+    items.forEach(function(it) {
+      var sc = it.status === 'live' ? 'svc-status-live' : it.status === 'mvp' ? 'svc-status-mvp' : 'svc-status-parkplatz';
+      var sl = it.status === 'live' ? 'LIVE' : it.status === 'mvp' ? 'MVP' : 'PARKPLATZ';
+      h += '<a class="svc-item" href="'+it.url+'" target="_blank" rel="noopener noreferrer">';
+      h += '<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px;margin-bottom:2px"><span class="svc-item-name">'+esc(it.name)+'</span><span class="svc-status '+sc+'">'+sl+'</span></div>';
+      h += '<div class="svc-item-desc">'+esc(it.desc)+'</div></div>';
+      h += '<span class="svc-open">\u00d6ffnen '+extSvg+'</span></a>';
+    });
+    h += '</div>';
+    if (ci < SERVICE_DATA.length - 1) h += '<hr class="svc-separator">';
+    h += '</div>';
+  });
+  if (!h) h = '<div class="empty-state">Kein Service gefunden.</div>';
+  el.innerHTML = h;
+}
+function toggleSvcCat(ci) { svcOpenState[ci] = !svcOpenState[ci]; renderServices(document.getElementById('service-search').value); }
+function filterServices() { renderServices(document.getElementById('service-search').value); }
+
 init();
+renderServices();
 window.addEventListener('resize', function() { if (graphData && simulation) { var p = document.getElementById('graph-panel'); simulation.force('center', d3.forceCenter(p.clientWidth/2, p.clientHeight/2)); simulation.alpha(0.1).restart(); } });
 </script>
 </body>
