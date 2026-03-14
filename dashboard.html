@@ -617,6 +617,73 @@
   .modal-trigger:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
   .modal-trigger .trigger-icon { font-size: 14px; }
 
+
+  .hygiene-card-v2 {
+    border: 1px solid var(--border-light);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: border-color .15s;
+  }
+  .hygiene-card-v2:hover { border-color: var(--border); }
+  .hygiene-card-v2.done { opacity: 0.5; }
+  .hygiene-card-v2.done .hc-header { text-decoration: line-through; }
+  .hc-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .hc-header:hover { background: var(--primary-soft); }
+  .hc-chevron { font-size: 10px; color: var(--muted); transition: transform .2s; flex-shrink: 0; }
+  .hc-chevron.open { transform: rotate(90deg); }
+  .hc-id { font: 600 12px 'Inter'; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hc-rec-badge {
+    font: 600 9px 'Inter'; letter-spacing: .03em; padding: 2px 7px;
+    border-radius: 4px; flex-shrink: 0; text-transform: uppercase;
+  }
+  .hc-rec-archive { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+  .hc-rec-wire { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+  .hc-rec-review { background: #f0f9ff; color: #0369a1; border: 1px solid #bae6fd; }
+  .hc-rec-promote { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
+  .hc-body { display: none; padding: 0 14px 12px; border-top: 1px solid var(--border-light); }
+  .hc-body.open { display: block; }
+  .hc-meta { font: 400 11px 'Inter'; color: var(--muted); margin: 8px 0; }
+  .hc-summary { font: 400 12px/1.5 'Inter'; color: var(--text); margin: 6px 0; }
+  .hc-rec { font: 400 11px/1.5 'Inter'; color: var(--primary); background: var(--primary-soft); padding: 8px 10px; border-radius: 6px; margin: 8px 0; }
+  .hc-note { font: 400 11px/1.4 'Inter'; color: var(--muted); background: var(--surface); padding: 6px 10px; border-radius: 6px; margin: 6px 0; white-space: pre-wrap; }
+  .hc-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .hc-btn {
+    font: 500 10px 'Inter'; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--card); color: var(--muted);
+    cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 4px;
+  }
+  .hc-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .hc-btn.danger:hover { border-color: #ef4444; color: #ef4444; }
+  .hc-btn.success:hover { border-color: #16a34a; color: #16a34a; }
+  .hc-btn:disabled { opacity: 0.4; cursor: default; }
+  .hc-parents { margin-top: 8px; }
+  .hc-parent-btn {
+    font: 400 10px 'Inter'; padding: 3px 8px; border-radius: 4px;
+    border: 1px solid var(--border-light); background: var(--surface); color: var(--muted);
+    cursor: pointer; transition: all .15s; margin: 2px 4px 2px 0; display: inline-block;
+  }
+  .hc-parent-btn:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+  .hc-note-input {
+    width: 100%; padding: 6px 10px; font: 400 11px 'Inter'; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); resize: vertical;
+    min-height: 36px; outline: none; margin-top: 6px; box-sizing: border-box;
+  }
+  .hc-note-input:focus { border-color: var(--primary); }
+  .hc-toast {
+    font: 500 11px 'Inter'; padding: 6px 12px; border-radius: 6px;
+    background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0;
+    margin-top: 6px; display: none;
+  }
+  .hc-toast.error { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+  .hc-toast.show { display: block; animation: modalFadeIn .2s ease; }
   @media (max-width: 900px) {
     .modal-card { width: 95vw; max-height: 85vh; }
     .header-actions { gap: 6px !important; }
@@ -1165,15 +1232,56 @@ function clearSearch() {
 }
 
 // --- Hygiene ---
-var hygieneData = null;
+var hygieneData = null, hygieneDone = {};
 function loadHygiene() {
   var el = document.getElementById('hygiene-results');
   el.innerHTML = '<div class="loading"><div class="spinner"></div> Graph-Hygiene l&auml;uft...</div>';
+  hygieneDone = {};
   fetch(BASE + '/sleep/hygiene', { method: 'POST' })
     .then(function(r) { return r.json(); })
     .then(function(data) { hygieneData = data; renderHygiene(data); })
     .catch(function(e) { el.innerHTML = '<div class="empty-state">Fehler: ' + esc(e.message) + '</div>'; });
 }
+
+function hygieneAction(action, nodeId, extra) {
+  var body = { action: action, node_id: nodeId };
+  if (extra) Object.keys(extra).forEach(function(k) { body[k] = extra[k]; });
+  var toast = document.getElementById('toast-' + nodeId);
+  return fetch(BASE + '/hygiene/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function(r) { return r.json().then(function(d) { d._status = r.status; return d; }); })
+    .then(function(d) {
+      if (d._status >= 400) throw new Error(d.error || 'Fehler');
+      if (toast) { toast.textContent = '\u2713 ' + d.message; toast.className = 'hc-toast show'; }
+      hygieneDone[nodeId] = true;
+      var card = document.getElementById('hcard-' + nodeId.replace(/[^a-zA-Z0-9_-]/g,''));
+      if (card) card.classList.add('done');
+      return d;
+    })
+    .catch(function(e) {
+      if (toast) { toast.textContent = '\u2717 ' + e.message; toast.className = 'hc-toast error show'; }
+    });
+}
+
+function hygieneArchive(id) { hygieneAction('archive', id); }
+function hygieneWire(id, parentId) { hygieneAction('wire', id, { parent_id: parentId, relation: 'contains' }); }
+function hygienePromote(id, status) { hygieneAction('promote', id, { status: status }); }
+function hygieneSaveNote(id) {
+  var input = document.getElementById('note-input-' + id.replace(/[^a-zA-Z0-9_-]/g,''));
+  if (!input || !input.value.trim()) return;
+  hygieneAction('note', id, { text: input.value.trim() }).then(function() { input.value = ''; });
+}
+
+function toggleHCard(id) {
+  var safe = id.replace(/[^a-zA-Z0-9_-]/g,'');
+  var body = document.getElementById('hbody-' + safe);
+  var chev = document.getElementById('hchev-' + safe);
+  if (body) { body.classList.toggle('open'); }
+  if (chev) { chev.classList.toggle('open'); }
+}
+
 function renderHygiene(data) {
   var el = document.getElementById('hygiene-results');
   var summary = data.summary || {};
@@ -1191,52 +1299,89 @@ function renderHygiene(data) {
   if (data.auto_fixed && data.auto_fixed.length) {
     h += '<div class="hygiene-section"><div class="section-title">&#x2705; Automatisch bereinigt</div>';
     data.auto_fixed.forEach(function(fix) {
-      h += '<div class="hygiene-card" style="border-left:3px solid #16a34a;"><div class="hygiene-card-summary">' + esc(fix) + '</div></div>';
+      h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);padding:6px 0;border-bottom:1px solid var(--border-light);">' + esc(fix) + '</div>';
     });
     h += '</div>';
   }
 
-  // Orphans
+  // Orphans (enhanced)
   if (data.orphans && data.orphans.length) {
     h += '<div class="hygiene-section"><div class="section-title">&#x1f47b; Verwaiste Nodes <span class="hygiene-count" style="background:#fef3c7;color:#92400e;">' + data.orphans.length + '</span></div>';
-    h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);margin-bottom:10px;">Nodes ohne Verbindung. Entweder verdrahten oder archivieren.</div>';
+    h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);margin-bottom:10px;">Klicke auf einen Eintrag f&uuml;r Details und Aktionen.</div>';
     data.orphans.forEach(function(o) {
-      var staleClass = o.days_stale > 14 ? 'stale-old' : o.days_stale > 7 ? 'stale-warn' : '';
-      h += '<div class="hygiene-card">';
-      h += '<div style="display:flex;align-items:center;justify-content:space-between;">';
-      h += '<span class="hygiene-card-id" onclick="focusNode(\'' + esc(o.id) + '\')">' + esc(o.id) + '</span>';
-      if (staleClass) h += '<span class="hygiene-stale-badge ' + staleClass + '">' + o.days_stale + 'd</span>';
+      var safe = o.id.replace(/[^a-zA-Z0-9_-]/g,'');
+      var recClass = o.rec_type === 'archive' ? 'hc-rec-archive' : o.rec_type === 'wire' ? 'hc-rec-wire' : o.rec_type === 'promote' ? 'hc-rec-promote' : 'hc-rec-review';
+      var recLabel = o.rec_type === 'archive' ? 'Archivieren' : o.rec_type === 'wire' ? 'Verdrahten' : o.rec_type === 'promote' ? 'Promoten' : 'Pr\u00fcfen';
+      var isDone = hygieneDone[o.id];
+      h += '<div class="hygiene-card-v2' + (isDone ? ' done' : '') + '" id="hcard-' + safe + '">';
+      h += '<div class="hc-header" onclick="toggleHCard(\'' + esc(o.id) + '\')">';
+      h += '<span class="hc-chevron" id="hchev-' + safe + '">\u25B6</span>';
+      h += '<span class="hc-id">' + esc(o.id) + '</span>';
+      h += '<span class="hc-rec-badge ' + recClass + '">' + recLabel + '</span>';
+      h += '<span class="hygiene-stale-badge ' + (o.days_stale > 14 ? 'stale-old' : 'stale-warn') + '">' + o.days_stale + 'd</span>';
       h += '</div>';
-      h += '<div class="hygiene-card-meta">' + esc(o.domain) + ' &middot; ' + esc(o.status) + '</div>';
-      if (o.summary) h += '<div class="hygiene-card-summary">' + esc(o.summary) + '</div>';
+      h += '<div class="hc-body" id="hbody-' + safe + '">';
+      h += '<div class="hc-meta">' + esc(o.domain) + ' \u00b7 ' + esc(o.status) + (o.type ? ' \u00b7 ' + esc(o.type) : '') + '</div>';
+      if (o.summary) h += '<div class="hc-summary">' + esc(o.summary) + '</div>';
+      if (o.rec_text) h += '<div class="hc-rec">\ud83d\udca1 ' + esc(o.rec_text) + '</div>';
+      if (o.kai_note) h += '<div class="hc-note">\ud83d\udcdd ' + esc(o.kai_note) + '</div>';
+      // Actions
+      h += '<div class="hc-actions">';
+      h += '<button class="hc-btn danger" onclick="event.stopPropagation();hygieneArchive(\'' + esc(o.id) + '\')">\ud83d\uddd1 Archivieren</button>';
+      h += '<button class="hc-btn" onclick="event.stopPropagation();closeModal(\'hygiene\');setTimeout(function(){focusNode(\'' + esc(o.id) + '\')},200)">\ud83d\udd0d Im Graph</button>';
       h += '</div>';
+      // Suggested parents
+      if (o.suggested_parents && o.suggested_parents.length) {
+        h += '<div class="hc-parents"><div style="font:500 10px Inter;color:var(--muted);margin-bottom:4px;">Verdrahten mit:</div>';
+        o.suggested_parents.forEach(function(p) {
+          h += '<span class="hc-parent-btn" onclick="event.stopPropagation();hygieneWire(\'' + esc(o.id) + '\',\'' + esc(p.id) + '\')" title="' + esc(p.summary) + '">' + esc(p.id) + '</span>';
+        });
+        h += '</div>';
+      }
+      // Note input
+      h += '<div style="margin-top:8px;"><textarea class="hc-note-input" id="note-input-' + safe + '" placeholder="Notiz hinzuf\u00fcgen..." rows="1"></textarea>';
+      h += '<button class="hc-btn success" style="margin-top:4px;" onclick="event.stopPropagation();hygieneSaveNote(\'' + esc(o.id) + '\')">\ud83d\udcbe Notiz speichern</button></div>';
+      h += '<div class="hc-toast" id="toast-' + safe + '"></div>';
+      h += '</div></div>';
     });
     h += '</div>';
   }
 
-  // Stale Seeds
+  // Stale Seeds (enhanced)
   if (data.stale_seeds && data.stale_seeds.length) {
     h += '<div class="hygiene-section"><div class="section-title">&#x23f3; Stale Seeds <span class="hygiene-count" style="background:#f5f3ff;color:#7c3aed;">' + data.stale_seeds.length + '</span></div>';
-    h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);margin-bottom:10px;">Seed-Nodes seit &uuml;ber 14 Tagen ohne Update. Aufgreifen oder archivieren?</div>';
+    h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);margin-bottom:10px;">Seed-Nodes seit &uuml;ber 14 Tagen ohne Update.</div>';
     data.stale_seeds.forEach(function(s) {
-      var staleClass = s.days_stale > 30 ? 'stale-old' : 'stale-warn';
-      h += '<div class="hygiene-card">';
-      h += '<div style="display:flex;align-items:center;justify-content:space-between;">';
-      h += '<span class="hygiene-card-id" onclick="focusNode(\'' + esc(s.id) + '\')">' + esc(s.id) + '</span>';
-      h += '<span class="hygiene-stale-badge ' + staleClass + '">' + s.days_stale + 'd</span>';
+      var safe = s.id.replace(/[^a-zA-Z0-9_-]/g,'');
+      var isDone = hygieneDone[s.id];
+      h += '<div class="hygiene-card-v2' + (isDone ? ' done' : '') + '" id="hcard-' + safe + '">';
+      h += '<div class="hc-header" onclick="toggleHCard(\'' + esc(s.id) + '\')">';
+      h += '<span class="hc-chevron" id="hchev-' + safe + '">\u25B6</span>';
+      h += '<span class="hc-id">' + esc(s.id) + '</span>';
+      h += '<span class="hygiene-stale-badge ' + (s.days_stale > 30 ? 'stale-old' : 'stale-warn') + '">' + s.days_stale + 'd</span>';
       h += '</div>';
-      h += '<div class="hygiene-card-meta">' + esc(s.domain) + '</div>';
-      if (s.summary) h += '<div class="hygiene-card-summary">' + esc(s.summary) + '</div>';
+      h += '<div class="hc-body" id="hbody-' + safe + '">';
+      h += '<div class="hc-meta">' + esc(s.domain) + (s.edge_count != null ? ' \u00b7 ' + s.edge_count + ' Edges' : '') + '</div>';
+      if (s.summary) h += '<div class="hc-summary">' + esc(s.summary) + '</div>';
+      if (s.rec_text) h += '<div class="hc-rec">\ud83d\udca1 ' + esc(s.rec_text) + '</div>';
+      h += '<div class="hc-actions">';
+      h += '<button class="hc-btn success" onclick="event.stopPropagation();hygienePromote(\'' + esc(s.id) + '\',\'explored\')">\u2b06 \u2192 explored</button>';
+      h += '<button class="hc-btn danger" onclick="event.stopPropagation();hygieneArchive(\'' + esc(s.id) + '\')">\ud83d\uddd1 Archivieren</button>';
+      h += '<button class="hc-btn" onclick="event.stopPropagation();closeModal(\'hygiene\');setTimeout(function(){focusNode(\'' + esc(s.id) + '\')},200)">\ud83d\udd0d Im Graph</button>';
       h += '</div>';
+      h += '<div style="margin-top:8px;"><textarea class="hc-note-input" id="note-input-' + safe + '" placeholder="Notiz hinzuf\u00fcgen..." rows="1"></textarea>';
+      h += '<button class="hc-btn success" style="margin-top:4px;" onclick="event.stopPropagation();hygieneSaveNote(\'' + esc(s.id) + '\')">\ud83d\udcbe Notiz speichern</button></div>';
+      h += '<div class="hc-toast" id="toast-' + safe + '"></div>';
+      h += '</div></div>';
     });
     h += '</div>';
   }
 
-  // Cycles  
+  // Cycles
   if (data.cycles && data.cycles.length) {
     h += '<div class="hygiene-section"><div class="section-title">&#x1f504; Zyklen</div>';
     data.cycles.forEach(function(c) {
-      h += '<div class="hygiene-card" style="border-left:3px solid #ef4444;"><div class="hygiene-card-summary">' + esc(c.a) + ' &harr; ' + esc(c.b) + '</div></div>';
+      h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);padding:6px 0;border-bottom:1px solid var(--border-light);">' + esc(c.a) + ' \u2194 ' + esc(c.b) + '</div>';
     });
     h += '</div>';
   }
