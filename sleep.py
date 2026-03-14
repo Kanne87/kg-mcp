@@ -2,14 +2,15 @@
 sleep.py - Naechtliche KG-Konsolidierung
 Direkt im KG-MCP-Service. Kein N8N noetig.
 
-4 Phasen:
+5 Phasen:
+  Phase 0: Graph-Hygiene (rein SQL) - Zyklen, Phantome, Waisen, Stale Seeds
   Phase 1: Inventur (Sonnet) - Was ist heute passiert?
   Phase 2: Reflexion + Traum (Opus) - Muster, Synthese, Traum-Bild
   Phase 3: Umsetzung - Traum-Dokument speichern + E-Mail senden
   Phase 3b: Tagebuch - Menschenlesbares Projekt-Update fuer Kais Dashboard
 
 Scheduler: Threading-basiert (daemon), 1:00 CET/CEST.
-REST: /sleep/status, /sleep/trigger
+REST: /sleep/status, /sleep/trigger, /sleep/hygiene
 """
 
 import json
@@ -106,6 +107,164 @@ def _parse_json(text):
     if c.startswith("json"):
         c = c[4:].strip()
     return json.loads(c)
+
+
+def phase_0_hygiene(auto_fix=True):
+    """Strukturelle Graph-Hygiene. Rein SQL-basiert, kein LLM.
+
+    Checks:
+      1. Zyklen: bidirektionale contains-Edges (A contains B AND B contains A)
+      2. Duplikate: identische Edges (src+tgt+relation mehrfach)
+      3. Verwaiste Nodes: keine einzige Edge (weder src noch tgt)
+      4. Stale Seeds: seed-Nodes die seit >14 Tagen nicht aktualisiert wurden
+      5. Phantom-Edges: Edges die auf nicht-existente Nodes zeigen
+
+    Returns dict mit findings + fixes.
+    """
+    db = _db()
+    findings = {
+        "cycles": [],
+        "duplicates": [],
+        "orphans": [],
+        "stale_seeds": [],
+        "phantom_edges": [],
+        "auto_fixed": [],
+    }
+
+    try:
+        now = time.time()
+        fourteen_days_ago = now - (14 * 86400)
+
+        # --- 1. Zyklen: bidirektionale contains ---
+        cycles = db.execute("""
+            SELECT e1.source_id AS a, e1.target_id AS b,
+                   e1.weight AS w1, e2.weight AS w2
+            FROM edges e1
+            JOIN edges e2
+              ON e1.source_id = e2.target_id
+             AND e1.target_id = e2.source_id
+             AND e1.relation = e2.relation
+            WHERE e1.relation = 'contains'
+              AND e1.source_id < e1.target_id
+        """).fetchall()
+
+        for c in cycles:
+            pair = {"a": c["a"], "b": c["b"], "w1": c["w1"], "w2": c["w2"]}
+            findings["cycles"].append(pair)
+            if auto_fix:
+                # Behalte die Edge mit höherem Weight, lösche die andere
+                if c["w1"] >= c["w2"]:
+                    db.execute(
+                        "DELETE FROM edges WHERE source_id=? AND target_id=? AND relation='contains'",
+                        (c["b"], c["a"]),
+                    )
+                    findings["auto_fixed"].append(
+                        f"Zyklus {c['a']}<->contains->{c['b']}: "
+                        f"behielt {c['a']}→{c['b']} (w={c['w1']}), "
+                        f"löschte {c['b']}→{c['a']} (w={c['w2']})"
+                    )
+                else:
+                    db.execute(
+                        "DELETE FROM edges WHERE source_id=? AND target_id=? AND relation='contains'",
+                        (c["a"], c["b"]),
+                    )
+                    findings["auto_fixed"].append(
+                        f"Zyklus {c['a']}<->contains->{c['b']}: "
+                        f"behielt {c['b']}→{c['a']} (w={c['w2']}), "
+                        f"löschte {c['a']}→{c['b']} (w={c['w1']})"
+                    )
+
+        # --- 2. Phantom-Edges: zeigen auf nicht-existente Nodes ---
+        phantoms = db.execute("""
+            SELECT e.source_id, e.target_id, e.relation
+            FROM edges e
+            LEFT JOIN nodes n1 ON e.source_id = n1.id
+            LEFT JOIN nodes n2 ON e.target_id = n2.id
+            WHERE n1.id IS NULL OR n2.id IS NULL
+        """).fetchall()
+
+        for p in phantoms:
+            findings["phantom_edges"].append({
+                "src": p["source_id"],
+                "tgt": p["target_id"],
+                "rel": p["relation"],
+            })
+            if auto_fix:
+                db.execute(
+                    "DELETE FROM edges WHERE source_id=? AND target_id=? AND relation=?",
+                    (p["source_id"], p["target_id"], p["relation"]),
+                )
+                findings["auto_fixed"].append(
+                    f"Phantom-Edge gelöscht: {p['source_id']}→{p['relation']}→{p['target_id']}"
+                )
+
+        # --- 3. Verwaiste Nodes: kein einziger Edge ---
+        orphans = db.execute("""
+            SELECT n.id, n.domain, n.status, n.summary,
+                   CAST((? - n.updated_at) / 86400 AS INTEGER) AS days_stale
+            FROM nodes n
+            LEFT JOIN edges e1 ON n.id = e1.source_id
+            LEFT JOIN edges e2 ON n.id = e2.target_id
+            WHERE e1.source_id IS NULL AND e2.target_id IS NULL
+            ORDER BY n.updated_at ASC
+        """, (now,)).fetchall()
+
+        for o in orphans:
+            findings["orphans"].append({
+                "id": o["id"],
+                "domain": o["domain"],
+                "status": o["status"],
+                "summary": o["summary"][:80],
+                "days_stale": o["days_stale"],
+            })
+        # Verwaiste Nodes werden NICHT auto-gelöscht - zu gefährlich
+
+        # --- 4. Stale Seeds: seed seit >14 Tagen ohne Update ---
+        stale = db.execute("""
+            SELECT id, domain, summary,
+                   CAST((? - updated_at) / 86400 AS INTEGER) AS days_stale
+            FROM nodes
+            WHERE status = 'seed' AND updated_at < ?
+            ORDER BY updated_at ASC
+            LIMIT 30
+        """, (now, fourteen_days_ago)).fetchall()
+
+        for s in stale:
+            findings["stale_seeds"].append({
+                "id": s["id"],
+                "domain": s["domain"],
+                "summary": s["summary"][:80],
+                "days_stale": s["days_stale"],
+            })
+        # Stale Seeds werden NICHT auto-geändert - braucht menschliche Entscheidung
+
+        if auto_fix and findings["auto_fixed"]:
+            db.commit()
+
+        # Zusammenfassung
+        findings["summary"] = {
+            "cycles_found": len(findings["cycles"]),
+            "phantoms_found": len(findings["phantom_edges"]),
+            "orphans_found": len(findings["orphans"]),
+            "stale_seeds_found": len(findings["stale_seeds"]),
+            "auto_fixes_applied": len(findings["auto_fixed"]),
+        }
+
+        logger.info(
+            f"Phase 0 Hygiene: {findings['summary']['cycles_found']} Zyklen, "
+            f"{findings['summary']['phantoms_found']} Phantome, "
+            f"{findings['summary']['orphans_found']} Waisen, "
+            f"{findings['summary']['stale_seeds_found']} stale Seeds, "
+            f"{findings['summary']['auto_fixes_applied']} Auto-Fixes"
+        )
+
+        return findings
+
+    except Exception as e:
+        logger.error(f"Phase 0 Fehler: {e}", exc_info=True)
+        return {"error": str(e), "summary": {"error": True}}
+    finally:
+        db.close()
 
 
 # ==============================================================
@@ -436,9 +595,17 @@ def run_sleep_cycle():
     start = time.time()
 
     try:
+        # Phase 0: Graph-Hygiene (strukturell, kein LLM)
+        logger.info("Phase 0: Graph-Hygiene...")
+        hygiene = phase_0_hygiene(auto_fix=True)
+        logger.info(
+            f"Phase 0 fertig: {hygiene.get('summary', {}).get('auto_fixes_applied', 0)} Fixes"
+        )
+
         # Phase 1
         logger.info("Phase 1: Inventur...")
         inventory = phase_1_collect()
+        inventory["hygiene"] = hygiene
 
         if not inventory["session_docs"]:
             datum = datetime.now(TZ_BERLIN).strftime("%d.%m.%Y")
@@ -496,6 +663,7 @@ def run_sleep_cycle():
             "traum_titel": traum.get("traum_titel", ""),
             "diary_id": diary.get("doc_id", ""),
             "email_sent": email_ok,
+            "hygiene": hygiene.get("summary", {}),
         }
         _last_run = result
         logger.info(f"=== SCHLAF-ZYKLUS FERTIG ({elapsed:.1f}s) ===")
