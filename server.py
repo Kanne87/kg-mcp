@@ -136,21 +136,10 @@ def _doc_idx(r):
 @asynccontextmanager
 async def app_lifespan(app):
     init_db()
-    _sleep_task = None
-    try:
-        from sleep import sleep_scheduler, SLEEP_ENABLED
-        if SLEEP_ENABLED:
-            _sleep_task = asyncio.create_task(sleep_scheduler())
-            logging.getLogger("kg_mcp").info("Sleep scheduler gestartet")
-    except Exception as e:
-        logging.getLogger("kg_mcp").warning(f"Sleep scheduler Fehler: {e}")
+    # Sleep-Scheduler startet automatisch beim import von sleep.py
+    # (Threading-basiert, daemon=True, via start_scheduler())
+    # Kein asyncio Task noetig.
     yield {}
-    if _sleep_task:
-        _sleep_task.cancel()
-        try:
-            await _sleep_task
-        except asyncio.CancelledError:
-            pass
 
 # --- Server ---
 
