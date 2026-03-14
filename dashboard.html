@@ -540,6 +540,88 @@
     .side-panel { width: 100%; max-height: 50vh; border-left: none; border-top: 1px solid var(--border); }
     .main { flex-direction: column; }
   }
+
+  /* === MODALS === */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(26,26,46,0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    justify-content: center;
+    align-items: center;
+    animation: modalFadeIn .2s ease;
+  }
+  .modal-overlay.open { display: flex; }
+  @keyframes modalFadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .modal-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    width: 90vw;
+    max-width: 680px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.18);
+    animation: modalSlideIn .25s ease;
+  }
+  @keyframes modalSlideIn { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--border-light);
+    flex-shrink: 0;
+  }
+  .modal-header h2 {
+    font: 600 18px/1.2 'Playfair Display', Georgia, serif;
+    color: var(--text);
+    margin: 0;
+  }
+  .modal-close {
+    width: 32px; height: 32px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all .15s;
+  }
+  .modal-close:hover { background: var(--border-light); color: var(--text); }
+  .modal-body {
+    padding: 20px 24px;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .modal-trigger {
+    font: 500 11px 'Inter', sans-serif;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all .15s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .modal-trigger:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+  .modal-trigger .trigger-icon { font-size: 14px; }
+
+  @media (max-width: 900px) {
+    .modal-card { width: 95vw; max-height: 85vh; }
+    .header-actions { gap: 6px !important; }
+    .modal-trigger span.trigger-label { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -547,6 +629,12 @@
 <header class="header">
   <h1>Projekt-Orchestrierung</h1>
   <div class="header-right">
+    <div class="header-actions" style="display:flex;gap:8px;align-items:center;">
+      <button class="modal-trigger" onclick="openModal('schlachtplan')"><span class="trigger-icon">&#x1f5fa;</span><span class="trigger-label">Schlachtplan</span></button>
+      <button class="modal-trigger" onclick="openModal('diary')"><span class="trigger-icon">&#x1f4d6;</span><span class="trigger-label">Tagebuch</span></button>
+      <button class="modal-trigger" onclick="openModal('hygiene')"><span class="trigger-icon">&#x1f9f9;</span><span class="trigger-label">Hygiene</span></button>
+      <button class="modal-trigger" onclick="openModal('services')"><span class="trigger-icon">&#x2699;</span><span class="trigger-label">Services</span></button>
+    </div>
     <div class="sleep-badge" id="sleep-status">
       <span class="dot"></span>
       <span>Lade...</span>
@@ -590,9 +678,6 @@
     <div class="side-tabs">
       <div class="side-tab active" data-tab="actions">N&auml;chste Schritte</div>
       <div class="side-tab" data-tab="detail">Details</div>
-      <div class="side-tab" data-tab="diary">Tagebuch</div>
-      <div class="side-tab" data-tab="hygiene">Hygiene</div>
-      <div class="side-tab" data-tab="services">Services</div>
     </div>
     <div class="side-content">
       <div class="tab-panel active" id="tab-actions">
@@ -611,41 +696,66 @@
           </div>
         </div>
       </div>
-      <div class="tab-panel" id="tab-diary">
-        <div id="diary-content">
-          <div class="loading"><div class="spinner"></div> Tagebuch laden...</div>
+
+
+
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="modal-diary" onclick="if(event.target===this)closeModal('diary')">
+  <div class="modal-card">
+    <div class="modal-header"><h2>&#x1f4d6; Tagebuch</h2><button class="modal-close" onclick="closeModal('diary')">&times;</button></div>
+    <div class="modal-body" id="diary-content">
+      <div class="loading"><div class="spinner"></div> Tagebuch laden...</div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-hygiene" onclick="if(event.target===this)closeModal('hygiene')">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h2>&#x1f9f9; Graph-Hygiene</h2>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="hygiene-btn hygiene-btn-remind" onclick="loadHygiene()" style="font-size:11px;">&#x21bb; Pr&uuml;fung starten</button>
+        <button class="modal-close" onclick="closeModal('hygiene')">&times;</button>
+      </div>
+    </div>
+    <div class="modal-body" id="hygiene-results">
+      <div class="empty-state">
+        <span class="icon">&#x1f9f9;</span>
+        Klicke &bdquo;Pr&uuml;fung starten&ldquo; um den Graphen<br>auf Waisen, Stale Seeds und Zyklen zu pr&uuml;fen.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-schlachtplan" onclick="if(event.target===this)closeModal('schlachtplan')">
+  <div class="modal-card" style="max-width:800px;">
+    <div class="modal-header"><h2>&#x1f5fa; Schlachtplan</h2><button class="modal-close" onclick="closeModal('schlachtplan')">&times;</button></div>
+    <div class="modal-body" id="schlachtplan-content">
+      <div class="loading"><div class="spinner"></div> Schlachtplan laden...</div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-services" onclick="if(event.target===this)closeModal('services')">
+  <div class="modal-card">
+    <div class="modal-header"><h2>&#x2699; Services</h2><button class="modal-close" onclick="closeModal('services')">&times;</button></div>
+    <div class="modal-body">
+      <div style="margin-bottom:14px">
+        <div style="position:relative">
+          <input type="text" id="service-search" placeholder="Service suchen&hellip;"
+            style="width:100%;padding:8px 12px 8px 32px;font:400 12px 'Inter',sans-serif;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);outline:none;box-sizing:border-box;"
+            onfocus="this.style.borderColor='var(--primary)'" onblur="this.style.borderColor='var(--border)'" oninput="filterServices()">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="position:absolute;left:10px;top:50%;transform:translateY(-50%)">
+            <circle cx="6" cy="6" r="4" stroke="#aaa8a0" stroke-width="1.3"/><path d="M9 9L12 12" stroke="#aaa8a0" stroke-width="1.3" stroke-linecap="round"/>
+          </svg>
         </div>
       </div>
-      <div class="tab-panel" id="tab-hygiene">
-        <div id="hygiene-content">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-            <div class="section-title" style="margin:0;border:none;padding:0;">Graph-Hygiene</div>
-            <button class="hygiene-btn hygiene-btn-remind" onclick="loadHygiene()" style="font-size:11px;">&#x21bb; Pr&uuml;fung starten</button>
-          </div>
-          <div id="hygiene-results">
-            <div class="empty-state">
-              <span class="icon">&#x1f9f9;</span>
-              Klicke &bdquo;Pr&uuml;fung starten&ldquo; um den Graphen<br>auf Waisen, Stale Seeds und Zyklen zu pr&uuml;fen.
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="tab-panel" id="tab-services">
-        <div id="services-content">
-          <div style="margin-bottom:14px">
-            <div style="position:relative">
-              <input type="text" id="service-search" placeholder="Service suchen&hellip;"
-                style="width:100%;padding:8px 12px 8px 32px;font:400 12px 'Inter',sans-serif;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);outline:none;box-sizing:border-box;"
-                onfocus="this.style.borderColor='var(--primary)'" onblur="this.style.borderColor='var(--border)'" oninput="filterServices()">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="position:absolute;left:10px;top:50%;transform:translateY(-50%)">
-                <circle cx="6" cy="6" r="4" stroke="#aaa8a0" stroke-width="1.3"/><path d="M9 9L12 12" stroke="#aaa8a0" stroke-width="1.3" stroke-linecap="round"/>
-              </svg>
-            </div>
-          </div>
-          <div id="services-list"></div>
-          <div style="font:400 10px 'Inter';color:var(--muted);text-align:center;margin-top:12px;letter-spacing:.03em">Alle Links &ouml;ffnen in neuem Tab</div>
-        </div>
-      </div>
+      <div id="services-list"></div>
+      <div style="font:400 10px 'Inter';color:var(--muted);text-align:center;margin-top:12px;letter-spacing:.03em">Alle Links &ouml;ffnen in neuem Tab</div>
     </div>
   </div>
 </div>
@@ -664,6 +774,98 @@ function cfg(st) { return STATUS_CFG[st] || STATUS_CFG.seed; }
 function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
 var graphData = null, selectedNode = null, simulation = null, svg, g, zoom;
+var schlachtplanLoaded = false;
+
+function openModal(name) {
+  var el = document.getElementById('modal-' + name);
+  if (el) { el.classList.add('open'); document.body.style.overflow = 'hidden'; }
+  if (name === 'schlachtplan' && !schlachtplanLoaded) loadSchlachtplan();
+}
+function closeModal(name) {
+  var el = document.getElementById('modal-' + name);
+  if (el) { el.classList.remove('open'); document.body.style.overflow = ''; }
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    ['diary','hygiene','schlachtplan','services'].forEach(function(n) { closeModal(n); });
+  }
+});
+
+function loadSchlachtplan() {
+  var el = document.getElementById('schlachtplan-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Schlachtplan laden...</div>';
+  fetch(BASE + '/orchestration').then(function(r) { return r.json(); }).then(function(data) {
+    schlachtplanLoaded = true;
+    var na = data.next_actions || {};
+    var ready = na.ready || [], inProg = na.in_progress || [], blocked = na.blocked || [];
+    var stats = data.stats || {};
+    var byStatus = stats.by_status || {};
+    var total = stats.total || 0;
+    var doneCount = (byStatus.live || 0) + (byStatus.verified || 0);
+    var pct = total > 0 ? Math.round(doneCount / total * 100) : 0;
+
+    var phases = [
+      { id: 'phase1', name: 'Phase 1: Stabilisierung', desc: 'Staging, PR-Stau, Hardening', items: ['coolify_production_setup','lostage_server','pr_stau_aufloesen','production_hardening','traefik_hardening'] },
+      { id: 'phase2', name: 'Phase 2: K-AI Fundament', desc: 'Auth, EWS, Chat-Frontend', items: ['kai_orchestrator','gw_ews_integration','orchestrator_chat_frontend'] },
+      { id: 'phase3', name: 'Phase 3: Vertrieb', desc: 'GBP, LinkedIn, Zahnzusatz', items: ['gbp_optimierung','linkedin_xing_profile','zahnzusatz_vergleich','zahnzusatz_tarifdatenbank'] },
+      { id: 'phase4', name: 'Phase 4: lo-board Features', desc: 'Timeline, Annotations, Postkorb', items: ['contract_timeline','document_editor_annotations','postkorb_ai','crawl_queue'] },
+      { id: 'phase5', name: 'Phase 5: K-AI Ausbau', desc: 'Ollama, Sub-Agents, LiveKit', items: ['orchestrator_ollama_integration','orchestrator_sub_agents','livekit','deepslate_voice_ai'] }
+    ];
+    var nodeMap = {};
+    data.nodes.forEach(function(n) { nodeMap[n.id] = n; });
+
+    var h = '';
+    h += '<div style="margin-bottom:20px;">';
+    h += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">';
+    h += '<div style="font:600 14px Inter;color:var(--text);">Gesamtfortschritt</div>';
+    h += '<div style="font:600 14px Inter;color:var(--primary);">' + pct + '%</div>';
+    h += '</div>';
+    h += '<div style="height:8px;background:var(--surface);border-radius:4px;overflow:hidden;">';
+    h += '<div style="height:100%;width:' + pct + '%;background:var(--primary);border-radius:4px;transition:width .5s;"></div>';
+    h += '</div>';
+    h += '<div style="font:400 11px Inter;color:var(--muted);margin-top:4px;">' + doneCount + ' von ' + total + ' Nodes live/verifiziert</div>';
+    h += '</div>';
+
+    phases.forEach(function(phase) {
+      var done = 0, phaseTotal = phase.items.length;
+      phase.items.forEach(function(id) {
+        var n = nodeMap[id];
+        if (n && (n.status === 'live' || n.status === 'verified')) done++;
+      });
+      var ppct = phaseTotal > 0 ? Math.round(done / phaseTotal * 100) : 0;
+      var statusColor = ppct === 100 ? '#16a34a' : ppct > 0 ? '#f59e0b' : '#94a3b8';
+      var statusLabel = ppct === 100 ? 'ERLEDIGT' : ppct > 0 ? 'IN ARBEIT' : 'OFFEN';
+
+      h += '<div style="border:1px solid var(--border-light);border-radius:12px;padding:16px;margin-bottom:12px;">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+      h += '<div><div style="font:600 13px Inter;color:var(--text);">' + esc(phase.name) + '</div>';
+      h += '<div style="font:400 11px Inter;color:var(--muted);margin-top:2px;">' + esc(phase.desc) + '</div></div>';
+      h += '<span style="font:600 10px Inter;letter-spacing:.04em;padding:3px 8px;border-radius:6px;color:' + statusColor + ';background:' + statusColor + '15;border:1px solid ' + statusColor + '30;">' + statusLabel + '</span>';
+      h += '</div>';
+      h += '<div style="height:4px;background:var(--surface);border-radius:2px;overflow:hidden;margin-bottom:10px;">';
+      h += '<div style="height:100%;width:' + ppct + '%;background:' + statusColor + ';border-radius:2px;"></div></div>';
+
+      phase.items.forEach(function(id) {
+        var n = nodeMap[id];
+        var name = n ? (n.name || id.replace(/_/g,' ')) : id.replace(/_/g,' ');
+        var st = n ? n.status : 'seed';
+        var c = cfg(st);
+        h += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;" onclick="closeModal(\'schlachtplan\');setTimeout(function(){focusNode(\'' + esc(id) + '\')},200)">';
+        h += '<span style="width:8px;height:8px;border-radius:50%;background:' + c.bg + ';border:1.5px solid ' + c.color + ';flex-shrink:0;"></span>';
+        h += '<span style="font:400 12px Inter;color:var(--text);flex:1;">' + esc(name) + '</span>';
+        h += '<span style="font:500 9px Inter;color:' + c.color + ';letter-spacing:.03em;">' + (c.label || st).toUpperCase() + '</span>';
+        h += '</div>';
+      });
+      h += '</div>';
+    });
+
+    h += '<div style="font:400 10px Inter;color:var(--muted);text-align:center;margin-top:8px;">Schlachtplan-Doc: <a href="#" onclick="event.preventDefault();closeModal(\'schlachtplan\');alert(\'Schlachtplan Doc ID: 62a4ca8c\')" style="color:var(--primary)">62a4ca8c</a></div>';
+    el.innerHTML = h;
+  }).catch(function(e) {
+    el.innerHTML = '<div class="empty-state">Fehler: ' + esc(e.message) + '</div>';
+  });
+}
+
 var activeStatusFilter = null, activeDomainFilter = null;
 var edgeVisibility = { contains: true, requires: false, extends: false, other: false };
 
