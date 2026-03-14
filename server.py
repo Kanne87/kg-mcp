@@ -388,6 +388,16 @@ async def _handle_sleep_trigger(request):
 async def _handle_sleep_options(request):
     return Response(status_code=204, headers=_CORS)
 
+async def _handle_sleep_hygiene(request):
+    """Run Phase 0 Graph-Hygiene on demand."""
+    try:
+        from sleep import phase_0_hygiene
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: phase_0_hygiene(auto_fix=True))
+        return JSONResponse(result, headers=_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500, headers=_CORS)
+
 
 # --- Diary + Dashboard REST endpoints ---
 
@@ -431,6 +441,8 @@ mcp._custom_starlette_routes.extend([
     Route("/sleep/status", _handle_sleep_options, methods=["OPTIONS"]),
     Route("/sleep/trigger", _handle_sleep_trigger, methods=["POST"]),
     Route("/sleep/trigger", _handle_sleep_options, methods=["OPTIONS"]),
+    Route("/sleep/hygiene", _handle_sleep_hygiene, methods=["POST"]),
+    Route("/sleep/hygiene", _handle_sleep_options, methods=["OPTIONS"]),
     Route("/diary", _handle_diary, methods=["GET"]),
     Route("/diary", _handle_wbs_options, methods=["OPTIONS"]),
     Route("/dashboard", _handle_dashboard, methods=["GET"]),
