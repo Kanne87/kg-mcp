@@ -137,6 +137,106 @@
   }
   .graph-panel svg:active { cursor: grabbing; }
 
+  .graph-search {
+    display: flex;
+    align-items: center;
+  }
+  .graph-search input {
+    width: 160px;
+    padding: 5px 10px;
+    font: 400 11px 'Inter', sans-serif;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--text);
+    outline: none;
+  }
+  .graph-search input:focus { border-color: var(--primary); }
+  .graph-search input::placeholder { color: var(--muted); }
+
+  .node-label { opacity: 0; transition: opacity .2s; }
+  .node-label.visible { opacity: 1; }
+  .node-label.search-hit { opacity: 1; font-weight: 600; fill: var(--primary); }
+  .node-group:hover .node-label { opacity: 1; }
+  .node-group.selected-group .node-label { opacity: 1; }
+  .node-circle.search-hit { stroke-width: 4; stroke: var(--primary) !important; filter: drop-shadow(0 0 4px rgba(154,123,46,0.4)); }
+  .node-circle.dimmed { opacity: 0.15; }
+  .node-label.dimmed { opacity: 0 !important; }
+  .edge-line.dimmed { opacity: 0.05 !important; }
+
+  .domain-hull {
+    fill-opacity: 0.04;
+    stroke-opacity: 0.15;
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+    pointer-events: none;
+  }
+
+  /* Hygiene Tab */
+  .hygiene-section { margin-bottom: 20px; }
+  .hygiene-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px; height: 18px;
+    font: 600 10px 'Inter';
+    border-radius: 9px;
+    padding: 0 5px;
+    margin-left: 6px;
+  }
+  .hygiene-card {
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: var(--bg);
+    border-radius: 8px;
+    border: 1px solid var(--border-light);
+    transition: border-color .15s;
+  }
+  .hygiene-card:hover { border-color: var(--primary); }
+  .hygiene-card-id {
+    font: 600 12px 'Inter';
+    color: var(--text);
+    cursor: pointer;
+  }
+  .hygiene-card-id:hover { color: var(--primary); }
+  .hygiene-card-meta {
+    font: 400 10px 'Inter';
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .hygiene-card-summary {
+    font: 400 11px/1.4 'Inter';
+    color: var(--text);
+    margin-top: 6px;
+  }
+  .hygiene-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .hygiene-btn {
+    font: 500 10px 'Inter';
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid;
+    cursor: pointer;
+    transition: all .15s;
+    background: var(--card);
+  }
+  .hygiene-btn-remind { color: var(--primary); border-color: var(--primary); }
+  .hygiene-btn-remind:hover { background: var(--primary-soft); }
+  .hygiene-btn-archive { color: var(--muted); border-color: var(--border); }
+  .hygiene-btn-archive:hover { background: var(--surface); }
+  .hygiene-stale-badge {
+    display: inline-block;
+    font: 500 9px 'Inter';
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+  }
+  .stale-warn { background: #fef3c7; color: #92400e; }
+  .stale-old { background: #fee2e2; color: #991b1b; }
+
   .graph-legend {
     position: absolute;
     bottom: 16px;
@@ -462,6 +562,9 @@
       <div class="graph-btn" onclick="zoomIn()" title="Zoom +">+</div>
       <div class="graph-btn" onclick="zoomOut()" title="Zoom -">&minus;</div>
       <div class="graph-btn" onclick="resetZoom()" title="Reset">&#8634;</div>
+      <div class="graph-search">
+        <input type="text" id="graph-search-input" placeholder="Node suchen&hellip;" oninput="searchGraph(this.value)">
+      </div>
     </div>
     <div class="edge-toggles">
       <div class="edge-toggle active" data-edge="contains"><span class="swatch"></span>Struktur</div>
@@ -488,6 +591,7 @@
       <div class="side-tab active" data-tab="actions">N&auml;chste Schritte</div>
       <div class="side-tab" data-tab="detail">Details</div>
       <div class="side-tab" data-tab="diary">Tagebuch</div>
+      <div class="side-tab" data-tab="hygiene">Hygiene</div>
       <div class="side-tab" data-tab="services">Services</div>
     </div>
     <div class="side-content">
@@ -510,6 +614,20 @@
       <div class="tab-panel" id="tab-diary">
         <div id="diary-content">
           <div class="loading"><div class="spinner"></div> Tagebuch laden...</div>
+        </div>
+      </div>
+      <div class="tab-panel" id="tab-hygiene">
+        <div id="hygiene-content">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+            <div class="section-title" style="margin:0;border:none;padding:0;">Graph-Hygiene</div>
+            <button class="hygiene-btn hygiene-btn-remind" onclick="loadHygiene()" style="font-size:11px;">&#x21bb; Pr&uuml;fung starten</button>
+          </div>
+          <div id="hygiene-results">
+            <div class="empty-state">
+              <span class="icon">&#x1f9f9;</span>
+              Klicke &bdquo;Pr&uuml;fung starten&ldquo; um den Graphen<br>auf Waisen, Stale Seeds und Zyklen zu pr&uuml;fen.
+            </div>
+          </div>
         </div>
       </div>
       <div class="tab-panel" id="tab-services">
@@ -651,9 +769,9 @@ function renderGraph(data) {
     .attr('r', function(d) { return Math.max(6, Math.min(20, 6 + (childCount[d.id]||0) * 2)); })
     .attr('fill', function(d) { return cfg(d.status).bg; }).attr('stroke', function(d) { return cfg(d.status).color; })
     .on('click', function(event, d) { event.stopPropagation(); selectNode(d); });
-  node.append('text').attr('class', 'node-label')
+  node.append('text').attr('class', function(d) { return 'node-label' + ((childCount[d.id]||0) > 0 ? ' visible' : ''); })
     .attr('dy', function(d) { return Math.max(6, Math.min(20, 6 + (childCount[d.id]||0) * 2)) + 14; })
-    .text(function(d) { var name = d.name||d.id.replace(/_/g,' '); return name.length > 20 ? name.substring(0,18)+'...' : name; });
+    .text(function(d) { var name = d.name||d.id.replace(/_/g,' '); return name.length > 24 ? name.substring(0,22)+'...' : name; });
   var progressData = computeProgress(filteredNodes, filteredEdges);
   node.filter(function(d) { return progressData[d.id] && progressData[d.id].total > 1; }).each(function(d) {
     var pg = progressData[d.id], r = Math.max(6, Math.min(20, 6 + (childCount[d.id]||0) * 2));
@@ -669,9 +787,11 @@ function renderGraph(data) {
   applyEdgeVisibility();
   simulation = d3.forceSimulation(filteredNodes)
     .force('link', d3.forceLink(filteredEdges).id(function(d) { return d.id; }).distance(function(d) { return d.relation==='contains'?50:d.relation==='requires'?150:180; }).strength(function(d) { return d.relation==='contains'?0.9:d.relation==='requires'?0.05:0.02; }))
-    .force('charge', d3.forceManyBody().strength(-150).distanceMax(350))
+    .force('charge', d3.forceManyBody().strength(-200).distanceMax(400))
     .force('center', d3.forceCenter(w / 2, h / 2))
-    .force('collision', d3.forceCollide(30))
+    .force('collision', d3.forceCollide(45))
+    .force('x', d3.forceX(w / 2).strength(0.03))
+    .force('y', d3.forceY(h / 2).strength(0.03))
     .on('tick', function() {
       link.attr('x1',function(d){return d.source.x;}).attr('y1',function(d){return d.source.y;}).attr('x2',function(d){return d.target.x;}).attr('y2',function(d){return d.target.y;});
       node.attr('transform', function(d) { return 'translate(' + d.x + ',' + d.y + ')'; });
@@ -689,7 +809,9 @@ function resetZoom() { var p = document.getElementById('graph-panel'); svg.trans
 function selectNode(d) {
   selectedNode = d;
   d3.selectAll('.node-circle').classed('selected', false);
+  d3.selectAll('.node-group').classed('selected-group', false);
   d3.selectAll('.node-circle').filter(function(n) { return n.id === d.id; }).classed('selected', true);
+  d3.selectAll('.node-group').filter(function(n) { return n.id === d.id; }).classed('selected-group', true);
   d3.selectAll('.edge-line').classed('highlighted', function(e) { var src=typeof e.source==='string'?e.source:e.source.id; var tgt=typeof e.target==='string'?e.target:e.target.id; return src===d.id||tgt===d.id; });
   document.querySelectorAll('.side-tab').forEach(function(t) { t.classList.remove('active'); });
   document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
@@ -697,7 +819,7 @@ function selectNode(d) {
   document.getElementById('tab-detail').classList.add('active');
   renderNodeDetail(d);
 }
-function deselectNode() { selectedNode = null; d3.selectAll('.node-circle').classed('selected', false); d3.selectAll('.edge-line').classed('highlighted', false); }
+function deselectNode() { selectedNode = null; d3.selectAll('.node-circle').classed('selected', false); d3.selectAll('.node-group').classed('selected-group', false); d3.selectAll('.edge-line').classed('highlighted', false); clearSearch(); }
 
 function renderNodeDetail(d) {
   var c = cfg(d.status);
@@ -802,6 +924,123 @@ function loadSleep() {
     var next = d.next_run ? new Date(d.next_run).toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'}) : '--';
     el.innerHTML = '<span class="dot ' + (active?'active':'') + '"></span><span>' + (active?'N&auml;chster Lauf: '+next:'Inaktiv') + '</span>';
   }).catch(function() { document.getElementById('sleep-status').innerHTML = '<span class="dot"></span><span>Offline</span>'; });
+}
+
+// --- Graph Search ---
+function searchGraph(q) {
+  if (!graphData || !g) return;
+  q = (q || '').toLowerCase().trim();
+  if (!q) { clearSearch(); return; }
+  var hits = new Set();
+  graphData.nodes.forEach(function(n) {
+    var name = (n.name || n.id || '').toLowerCase();
+    var desc = (n.description || '').toLowerCase();
+    if (name.indexOf(q) >= 0 || desc.indexOf(q) >= 0 || n.id.toLowerCase().indexOf(q) >= 0) hits.add(n.id);
+  });
+  g.selectAll('.node-circle').classed('search-hit', function(d) { return hits.has(d.id); }).classed('dimmed', function(d) { return !hits.has(d.id); });
+  g.selectAll('.node-label').classed('search-hit', function(d) { return hits.has(d.id); }).classed('dimmed', function(d) { return !hits.has(d.id); });
+  g.selectAll('.edge-line').classed('dimmed', function(d) {
+    var src = typeof d.source === 'string' ? d.source : d.source.id;
+    var tgt = typeof d.target === 'string' ? d.target : d.target.id;
+    return !hits.has(src) && !hits.has(tgt);
+  });
+  // Zoom to first hit
+  if (hits.size > 0 && hits.size <= 5) {
+    var first = graphData.nodes.find(function(n) { return hits.has(n.id); });
+    if (first && first.x && first.y) {
+      var panel = document.getElementById('graph-panel');
+      svg.transition().duration(500).call(zoom.transform,
+        d3.zoomIdentity.translate(panel.clientWidth/2, panel.clientHeight/2).scale(1.5).translate(-first.x, -first.y));
+    }
+  }
+}
+function clearSearch() {
+  if (!g) return;
+  document.getElementById('graph-search-input').value = '';
+  g.selectAll('.node-circle').classed('search-hit', false).classed('dimmed', false);
+  g.selectAll('.node-label').classed('search-hit', false).classed('dimmed', false);
+  g.selectAll('.edge-line').classed('dimmed', false);
+}
+
+// --- Hygiene ---
+var hygieneData = null;
+function loadHygiene() {
+  var el = document.getElementById('hygiene-results');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Graph-Hygiene l&auml;uft...</div>';
+  fetch(BASE + '/sleep/hygiene', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) { hygieneData = data; renderHygiene(data); })
+    .catch(function(e) { el.innerHTML = '<div class="empty-state">Fehler: ' + esc(e.message) + '</div>'; });
+}
+function renderHygiene(data) {
+  var el = document.getElementById('hygiene-results');
+  var summary = data.summary || {};
+  var h = '';
+
+  // Summary bar
+  h += '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">';
+  h += '<span class="stat-chip" style="color:#16a34a;border-color:#16a34a40;background:#dcfce7"><span class="num">' + (summary.auto_fixes_applied || 0) + '</span> Auto-Fixes</span>';
+  h += '<span class="stat-chip" style="color:#f59e0b;border-color:#f59e0b40;background:#fef3c7"><span class="num">' + (summary.orphans_found || 0) + '</span> Waisen</span>';
+  h += '<span class="stat-chip" style="color:#7c3aed;border-color:#7c3aed40;background:#f5f3ff"><span class="num">' + (summary.stale_seeds_found || 0) + '</span> Stale Seeds</span>';
+  h += '<span class="stat-chip" style="color:#ef4444;border-color:#ef444440;background:#fef2f2"><span class="num">' + (summary.cycles_found || 0) + '</span> Zyklen</span>';
+  h += '</div>';
+
+  // Auto-fixes
+  if (data.auto_fixed && data.auto_fixed.length) {
+    h += '<div class="hygiene-section"><div class="section-title">&#x2705; Automatisch bereinigt</div>';
+    data.auto_fixed.forEach(function(fix) {
+      h += '<div class="hygiene-card" style="border-left:3px solid #16a34a;"><div class="hygiene-card-summary">' + esc(fix) + '</div></div>';
+    });
+    h += '</div>';
+  }
+
+  // Orphans
+  if (data.orphans && data.orphans.length) {
+    h += '<div class="hygiene-section"><div class="section-title">&#x1f47b; Verwaiste Nodes <span class="hygiene-count" style="background:#fef3c7;color:#92400e;">' + data.orphans.length + '</span></div>';
+    h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);margin-bottom:10px;">Nodes ohne Verbindung. Entweder verdrahten oder archivieren.</div>';
+    data.orphans.forEach(function(o) {
+      var staleClass = o.days_stale > 14 ? 'stale-old' : o.days_stale > 7 ? 'stale-warn' : '';
+      h += '<div class="hygiene-card">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;">';
+      h += '<span class="hygiene-card-id" onclick="focusNode('' + esc(o.id) + '')">' + esc(o.id) + '</span>';
+      if (staleClass) h += '<span class="hygiene-stale-badge ' + staleClass + '">' + o.days_stale + 'd</span>';
+      h += '</div>';
+      h += '<div class="hygiene-card-meta">' + esc(o.domain) + ' &middot; ' + esc(o.status) + '</div>';
+      if (o.summary) h += '<div class="hygiene-card-summary">' + esc(o.summary) + '</div>';
+      h += '</div>';
+    });
+    h += '</div>';
+  }
+
+  // Stale Seeds
+  if (data.stale_seeds && data.stale_seeds.length) {
+    h += '<div class="hygiene-section"><div class="section-title">&#x23f3; Stale Seeds <span class="hygiene-count" style="background:#f5f3ff;color:#7c3aed;">' + data.stale_seeds.length + '</span></div>';
+    h += '<div style="font:400 11px/1.5 Inter;color:var(--muted);margin-bottom:10px;">Seed-Nodes seit &uuml;ber 14 Tagen ohne Update. Aufgreifen oder archivieren?</div>';
+    data.stale_seeds.forEach(function(s) {
+      var staleClass = s.days_stale > 30 ? 'stale-old' : 'stale-warn';
+      h += '<div class="hygiene-card">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;">';
+      h += '<span class="hygiene-card-id" onclick="focusNode('' + esc(s.id) + '')">' + esc(s.id) + '</span>';
+      h += '<span class="hygiene-stale-badge ' + staleClass + '">' + s.days_stale + 'd</span>';
+      h += '</div>';
+      h += '<div class="hygiene-card-meta">' + esc(s.domain) + '</div>';
+      if (s.summary) h += '<div class="hygiene-card-summary">' + esc(s.summary) + '</div>';
+      h += '</div>';
+    });
+    h += '</div>';
+  }
+
+  // Cycles  
+  if (data.cycles && data.cycles.length) {
+    h += '<div class="hygiene-section"><div class="section-title">&#x1f504; Zyklen</div>';
+    data.cycles.forEach(function(c) {
+      h += '<div class="hygiene-card" style="border-left:3px solid #ef4444;"><div class="hygiene-card-summary">' + esc(c.a) + ' &harr; ' + esc(c.b) + '</div></div>';
+    });
+    h += '</div>';
+  }
+
+  if (!h) h = '<div class="empty-state"><span class="icon">&#x2728;</span>Alles sauber! Keine Probleme gefunden.</div>';
+  el.innerHTML = h;
 }
 
 function init() {
