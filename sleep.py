@@ -337,7 +337,7 @@ def hygiene_analyze_node(node_id):
         
         # 1. Vollständige Node-Daten
         node = db.execute(
-            "SELECT id, domain, status, type, summary, kai_note, description, "
+            "SELECT id, domain, status, type, summary, kai_note, "
             "CAST((? - updated_at) / 86400 AS INTEGER) AS days_stale, "
             "CAST((? - created_at) / 86400 AS INTEGER) AS days_old "
             "FROM nodes WHERE id=?",
@@ -410,7 +410,6 @@ Der Graph bildet sein gesamtes Denk- und Arbeitsfeld ab.
 - Letzte Aktualisierung: vor {node["days_stale"]} Tagen
 - Summary: {node["summary"] or "(leer)"}
 - kai_note: {(node["kai_note"] or "(leer)")[:500]}
-- Description: {(node["description"] or "(leer)")[:300]}
 
 ## Aktuelle Edges ({len(edge_list)})
 {json.dumps(edge_list, ensure_ascii=False) if edge_list else "(keine – verwaister Node)"}
@@ -450,7 +449,7 @@ Antworte NUR als JSON:
         
     except json.JSONDecodeError as e:
         logger.error(f"Hygiene-Analyse JSON-Fehler für {node_id}: {e}")
-        return {"node_id": node_id, "error": f"LLM gab kein valides JSON: {str(e)}", "raw": raw[:500] if 'raw' in dir() else ""}
+        return {"node_id": node_id, "error": f"LLM gab kein valides JSON: {str(e)}", "raw": raw[:500] if 'raw' in locals() else ""}
     except Exception as e:
         logger.error(f"Hygiene-Analyse Fehler für {node_id}: {e}", exc_info=True)
         return {"node_id": node_id, "error": str(e)}
