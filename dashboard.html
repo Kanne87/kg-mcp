@@ -684,6 +684,14 @@
   }
   .hc-toast.error { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
   .hc-toast.show { display: block; animation: modalFadeIn .2s ease; }
+  .analysis-result { margin: 10px 0; }
+  .analysis-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .analysis-action { font: 700 10px 'Inter'; letter-spacing: .04em; padding: 3px 10px; border-radius: 5px; text-transform: uppercase; }
+  .analysis-section { font: 400 12px/1.6 'Inter'; color: var(--text); margin: 6px 0; padding: 8px 12px; background: var(--surface); border-radius: 8px; border-left: 3px solid var(--primary); }
+  .analysis-label { display: block; font: 600 10px 'Inter'; color: var(--primary); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+  .analysis-target { font: 400 11px 'Inter'; color: var(--muted); margin-top: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .analysis-container { border-top: 1px dashed var(--border-light); margin-top: 8px; padding-top: 4px; }
+
   @media (max-width: 900px) {
     .modal-card { width: 95vw; max-height: 85vh; }
     .header-actions { gap: 6px !important; }
@@ -1233,6 +1241,51 @@ function clearSearch() {
 
 // --- Hygiene ---
 var hygieneData = null, hygieneDone = {};
+var analysisCache = {};
+
+function loadAnalysis(nodeId) {
+  var safe = nodeId.replace(/[^a-zA-Z0-9_-]/g,'');
+  var el = document.getElementById('analysis-' + safe);
+  if (!el) return;
+  if (analysisCache[nodeId]) { renderAnalysis(nodeId, analysisCache[nodeId]); return; }
+  el.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:10px;"><div class="spinner" style="width:14px;height:14px;border-width:2px;"></div><span style="font:400 11px Inter;color:var(--muted);">Sonnet analysiert...</span></div>';
+  fetch(BASE + '/hygiene/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    analysisCache[nodeId] = data;
+    renderAnalysis(nodeId, data);
+  }).catch(function(e) {
+    el.innerHTML = '<div style="font:400 11px Inter;color:#ef4444;padding:8px;">Analyse-Fehler: ' + esc(e.message) + '</div>';
+  });
+}
+
+function renderAnalysis(nodeId, data) {
+  var safe = nodeId.replace(/[^a-zA-Z0-9_-]/g,'');
+  var el = document.getElementById('analysis-' + safe);
+  if (!el) return;
+  if (data.error) { el.innerHTML = '<div style="font:400 11px Inter;color:#ef4444;padding:8px;">Fehler: ' + esc(data.error) + '</div>'; return; }
+  var actionColors = { ARCHIVE: '#dc2626', WIRE: '#92400e', PROMOTE: '#16a34a', REVIEW: '#0369a1', MERGE: '#7c3aed' };
+  var actionLabels = { ARCHIVE: 'Archivieren', WIRE: 'Verdrahten', PROMOTE: 'Promoten', REVIEW: 'Manuell pr\u00fcfen', MERGE: 'Zusammenf\u00fchren' };
+  var confColors = { high: '#16a34a', medium: '#f59e0b', low: '#ef4444' };
+  var ac = data.action || 'REVIEW';
+  var conf = data.confidence || 'low';
+  var h = '<div class="analysis-result">';
+  h += '<div class="analysis-header">';
+  h += '<span class="analysis-action" style="color:' + (actionColors[ac]||'#6a6a7a') + ';background:' + (actionColors[ac]||'#6a6a7a') + '10;border:1px solid ' + (actionColors[ac]||'#6a6a7a') + '30;">' + (actionLabels[ac]||ac) + '</span>';
+  h += '<span style="font:500 9px Inter;color:' + (confColors[conf]||'#94a3b8') + ';">Konfidenz: ' + conf + '</span>';
+  h += '</div>';
+  if (data.what) h += '<div class="analysis-section"><span class="analysis-label">Was ist das?</span>' + esc(data.what) + '</div>';
+  if (data.why_orphan) h += '<div class="analysis-section"><span class="analysis-label">Warum verwaist?</span>' + esc(data.why_orphan) + '</div>';
+  if (data.reasoning) h += '<div class="analysis-section"><span class="analysis-label">Begr\u00fcndung</span>' + esc(data.reasoning) + '</div>';
+  if (data.target_node) h += '<div class="analysis-target">Ziel-Node: <span class="hc-parent-btn" onclick="event.stopPropagation();closeModal(\'hygiene\');setTimeout(function(){focusNode(\'' + esc(data.target_node) + '\')},200)">' + esc(data.target_node) + '</span>';
+  if (data.target_node && ac === 'WIRE') h += ' <button class="hc-btn success" onclick="event.stopPropagation();hygieneWire(\'' + esc(nodeId) + '\',\'' + esc(data.target_node) + '\')">Jetzt verdrahten</button>';
+  if (data.target_node) h += '</div>';
+  h += '</div>';
+  el.innerHTML = h;
+}
+
 function loadHygiene() {
   var el = document.getElementById('hygiene-results');
   el.innerHTML = '<div class="loading"><div class="spinner"></div> Graph-Hygiene l&auml;uft...</div>';
@@ -1278,7 +1331,11 @@ function toggleHCard(id) {
   var safe = id.replace(/[^a-zA-Z0-9_-]/g,'');
   var body = document.getElementById('hbody-' + safe);
   var chev = document.getElementById('hchev-' + safe);
-  if (body) { body.classList.toggle('open'); }
+  if (body) {
+    var wasOpen = body.classList.contains('open');
+    body.classList.toggle('open');
+    if (!wasOpen && !analysisCache[id]) { loadAnalysis(id); }
+  }
   if (chev) { chev.classList.toggle('open'); }
 }
 
@@ -1325,6 +1382,8 @@ function renderHygiene(data) {
       if (o.summary) h += '<div class="hc-summary">' + esc(o.summary) + '</div>';
       if (o.rec_text) h += '<div class="hc-rec">\ud83d\udca1 ' + esc(o.rec_text) + '</div>';
       if (o.kai_note) h += '<div class="hc-note">\ud83d\udcdd ' + esc(o.kai_note) + '</div>';
+      // Analysis (lazy loaded)
+      h += '<div class="analysis-container" id="analysis-' + safe + '"><div style="font:400 10px Inter;color:var(--muted);padding:8px 0;">\ud83e\udde0 Klicke um Sonnet-Analyse zu laden</div></div>';
       // Actions
       h += '<div class="hc-actions">';
       h += '<button class="hc-btn danger" onclick="event.stopPropagation();hygieneArchive(\'' + esc(o.id) + '\')">\ud83d\uddd1 Archivieren</button>';
@@ -1364,6 +1423,7 @@ function renderHygiene(data) {
       h += '<div class="hc-meta">' + esc(s.domain) + (s.edge_count != null ? ' \u00b7 ' + s.edge_count + ' Edges' : '') + '</div>';
       if (s.summary) h += '<div class="hc-summary">' + esc(s.summary) + '</div>';
       if (s.rec_text) h += '<div class="hc-rec">\ud83d\udca1 ' + esc(s.rec_text) + '</div>';
+      h += '<div class="analysis-container" id="analysis-' + safe + '"><div style="font:400 10px Inter;color:var(--muted);padding:8px 0;">\ud83e\udde0 Klicke um Sonnet-Analyse zu laden</div></div>';
       h += '<div class="hc-actions">';
       h += '<button class="hc-btn success" onclick="event.stopPropagation();hygienePromote(\'' + esc(s.id) + '\',\'explored\')">\u2b06 \u2192 explored</button>';
       h += '<button class="hc-btn danger" onclick="event.stopPropagation();hygieneArchive(\'' + esc(s.id) + '\')">\ud83d\uddd1 Archivieren</button>';
